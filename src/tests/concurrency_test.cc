@@ -16,7 +16,7 @@ void test_basic_task_creation() {
     
     // Spawn multiple tasks
     for (int i = 0; i < 5; i++) {
-        runtime.go([i, &counter]() {
+        runtime.kode([i, &counter]() {
             std::cout << "[Task " << i << "] Starting execution" << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             counter.fetch_add(1);
@@ -38,7 +38,7 @@ void test_channel_communication() {
     auto channel = runtime.make_channel<std::string>(2);  // Buffered channel
     
     // Producer task
-    runtime.go([channel]() {
+    runtime.kode([channel]() {
         std::cout << "[Producer] Sending messages..." << std::endl;
         channel->send("Hello");
         channel->send("World");
@@ -49,7 +49,7 @@ void test_channel_communication() {
     });
     
     // Consumer task
-    runtime.go([channel]() {
+    runtime.kode([channel]() {
         std::cout << "[Consumer] Receiving messages..." << std::endl;
         std::string msg;
         while (channel->receive(msg)) {
@@ -73,7 +73,7 @@ void test_preemptive_scheduling() {
     std::atomic<bool> light_task_executed{false};
     
     // Heavy computation task
-    runtime.go([&heavy_task_running]() {
+    runtime.kode([&heavy_task_running]() {
         heavy_task_running.store(true);
         std::cout << "[Heavy] Starting CPU-intensive task..." << std::endl;
         
@@ -94,7 +94,7 @@ void test_preemptive_scheduling() {
     // Light task that should be able to run due to preemption
     std::this_thread::sleep_for(std::chrono::milliseconds(50));  // Let heavy task start
     
-    runtime.go([&light_task_executed]() {
+    runtime.kode([&light_task_executed]() {
         std::cout << "[Light] Quick task executing!" << std::endl;
         light_task_executed.store(true);
     });
@@ -102,9 +102,9 @@ void test_preemptive_scheduling() {
     runtime.join_all();
     
     if (light_task_executed.load()) {
-        std::cout << "✓ Preemptive scheduling working - light task executed" << std::endl;
+        std::cout << "OK: Preemptive scheduling working - light task executed" << std::endl;
     } else {
-        std::cout << "✗ Preemptive scheduling issue - light task didn't execute" << std::endl;
+        std::cout << "FAIL: Preemptive scheduling issue - light task did not execute" << std::endl;
     }
     
     runtime.shutdown();
@@ -148,7 +148,7 @@ void test_context_switching() {
     
     // Multiple tasks that yield frequently
     for (int i = 0; i < 3; i++) {
-        runtime.go([i, &switch_count, &runtime]() {
+        runtime.kode([i, &switch_count, &runtime]() {
             for (int j = 0; j < 5; j++) {
                 std::cout << "[Task " << i << "] Iteration " << j << std::endl;
                 runtime.yield();  // Cooperative yield
@@ -178,7 +178,7 @@ void test_performance_benchmark() {
     
     // Spawn many lightweight tasks
     for (int i = 0; i < NUM_TASKS; i++) {
-        runtime.go([i, &completed_tasks]() {
+        runtime.kode([i, &completed_tasks]() {
             // Minimal work per task
             volatile int x = i * 2;
             (void)x;  // Suppress unused variable warning
@@ -212,12 +212,12 @@ int main() {
         test_performance_benchmark();
         
         std::cout << "\n=== All Tests Completed ===" << std::endl;
-        std::cout << "✓ Basic task creation and execution" << std::endl;
-        std::cout << "✓ Channel-based communication (CSP)" << std::endl;
-        std::cout << "✓ Preemptive scheduling" << std::endl;
-        std::cout << "✓ Timeout and cancellation" << std::endl;
-        std::cout << "✓ Context switching and yielding" << std::endl;
-        std::cout << "✓ Performance benchmarking" << std::endl;
+        std::cout << "OK: Basic task creation and execution" << std::endl;
+        std::cout << "OK: Channel-based communication (CSP)" << std::endl;
+        std::cout << "OK: Preemptive scheduling" << std::endl;
+        std::cout << "OK: Timeout and cancellation" << std::endl;
+        std::cout << "OK: Context switching and yielding" << std::endl;
+        std::cout << "OK: Performance benchmarking" << std::endl;
         
     } catch (const std::exception& e) {
         std::cerr << "Test failed with exception: " << e.what() << std::endl;

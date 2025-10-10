@@ -11,6 +11,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <optional>
+#include <ucontext.h>
 
 // Forward declarations
 class TaskScheduler;
@@ -25,6 +26,7 @@ template<typename T> class Channel;
 
 class Task {
 public:
+    friend class TaskScheduler;
     enum State {
         CREATED,
         RUNNABLE,
@@ -45,6 +47,10 @@ private:
     void* stack_pointer_;
     std::chrono::high_resolution_clock::time_point created_at_;
     std::chrono::high_resolution_clock::time_point last_run_;
+    
+    // ucontext-based fiber context (robust, portable on Linux)
+    ucontext_t uctx_;
+    bool uctx_initialized_ = false;
     
     // Full context switching support
     struct ExecutionContext {
@@ -69,7 +75,7 @@ private:
     std::function<void()> cleanup_;
     
     // Stack management
-    static constexpr size_t INITIAL_STACK_SIZE = 4096;  // 4KB like Go
+    static constexpr size_t INITIAL_STACK_SIZE = 256 * 1024;  // 256KB initial fiber stack
     static constexpr size_t MAX_STACK_SIZE = 1024 * 1024;  // 1MB max
     
 public:
@@ -81,6 +87,9 @@ public:
     void yield();
     void cancel();
     bool is_cancelled() const { return cancelled_.load(); }
+    
+    // Invoke the task function (used by fiber trampoline)
+    void invoke();
     
     // State management
     State get_state() const { return state_; }
@@ -241,6 +250,9 @@ private:
         // Current task tracking for preemption
         std::shared_ptr<Task> current_task;
         std::optional<std::chrono::high_resolution_clock::time_point> current_task_start_time;
+        
+        // Scheduler context for ucontext switching
+        ucontext_t sched_ctx;
     };
     
     std::vector<std::unique_ptr<WorkerThread>> workers_;
@@ -284,6 +296,7 @@ public:
 private:
     void worker_loop(size_t worker_id);
     std::shared_ptr<Task> steal_task(size_t worker_id);
+    std::shared_ptr<Task> steal_task_fast(size_t worker_id);  // Optimized work stealing
     void schedule_task(std::shared_ptr<Task> task, size_t preferred_worker = SIZE_MAX);
     
     // Preemption support
@@ -304,9 +317,9 @@ public:
     bool initialize(size_t num_workers = 0);
     void shutdown();
     
-    // Go-style API
-    Task::TaskId go(Task::TaskFunction func);  // spawn task
-    void yield();                              // cooperative yield
+    // Kode-style API (inspired by Go)
+    Task::TaskId kode(Task::TaskFunction func);  // spawn task
+    void yield();                                // cooperative yield
     
     // Channel operations
     template<typename T>

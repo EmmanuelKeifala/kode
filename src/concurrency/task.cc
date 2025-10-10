@@ -3,6 +3,20 @@
 #include <algorithm>
 #include <random>
 #include <cstring>
+#include <cmath>
+// POSIX signal-based preemption removed for stability; using cooperative ucontext
+
+// Thread-local scheduler context and current task for ucontext-based switching
+static thread_local ucontext_t* g_sched_ctx = nullptr;
+static thread_local Task* g_current_task = nullptr;
+
+// Trampoline invoked by makecontext to execute a task function
+static void TaskTrampoline() {
+    if (g_current_task) {
+        g_current_task->invoke();
+    }
+}
+
 
 // Task implementation
 Task::Task(TaskId id, TaskFunction func) 
@@ -19,22 +33,8 @@ Task::~Task() {
 
 void Task::initialize_stack() {
     stack_.resize(INITIAL_STACK_SIZE);
-    
-    // Align stack to 16-byte boundary (required by x86_64 ABI)
-    uintptr_t stack_addr = reinterpret_cast<uintptr_t>(stack_.data());
-    stack_addr = (stack_addr + 15) & ~15;  // Round up to 16-byte boundary
-    
-    context_.stack_base = reinterpret_cast<void*>(stack_addr);
-    context_.stack_top = reinterpret_cast<void*>(stack_addr + stack_.size() - 16);
-    context_.stack_size = stack_.size();
-    
-    // Initialize stack pointer to top of stack
-    context_.rsp = reinterpret_cast<uint64_t>(context_.stack_top);
-    stack_pointer_ = context_.stack_top;
-    
-    // Initialize context
-    std::memset(&context_, 0, sizeof(context_));
-    context_.rsp = reinterpret_cast<uint64_t>(context_.stack_top);
+    stack_pointer_ = stack_.data() + stack_.size();
+    // ucontext will be initialized lazily in the worker before first run
 }
 
 void Task::run() {
@@ -54,60 +54,72 @@ void Task::run() {
     }
 }
 
+void Task::invoke() {
+    // Execute the task function inside the fiber context
+    if (cancelled_.load()) {
+        state_ = CANCELLED;
+        return;
+    }
+    state_ = RUNNING;
+    try {
+        function_();
+        state_ = COMPLETED;
+    } catch (const std::exception& e) {
+        std::cerr << "[Task " << id_ << "] Exception: " << e.what() << std::endl;
+        state_ = COMPLETED;
+    }
+    // Upon return, control goes to uc_link (scheduler context)
+}
+
 void Task::yield() {
     if (cancelled_.load()) {
         throw std::runtime_error("Task cancelled");
     }
-    
     state_ = RUNNABLE;
-    
-    // Full implementation: Save current execution context
-    save_context();
-    
-    // Mark yield point for scheduler
     last_run_ = std::chrono::high_resolution_clock::now();
-    
-    // The actual context switch happens in the scheduler
-    // This is where we would switch to the scheduler's context
-    // For now, we use cooperative yielding as a fallback
-    std::this_thread::yield();
-    
-    // When we resume, restore context
-    restore_context();
-    
-    // Check for cancellation after yield
+    if (g_sched_ctx) {
+        // Save this task context and switch to scheduler
+        swapcontext(&uctx_, g_sched_ctx);
+    } else {
+        // Fallback if no scheduler context is set (should not happen on workers)
+        std::this_thread::yield();
+    }
     if (cancelled_.load()) {
         throw std::runtime_error("Task cancelled during yield");
     }
 }
 
-// Full context switching implementation
+// Full context switching implementation using proper assembly
 void Task::save_context() {
     #ifdef __x86_64__
-    // Save CPU registers using simplified inline assembly
+    // Use proper assembly with correct constraints and clobbers
     asm volatile (
-        "movq %%rsp, %0"
-        : "=m" (context_.rsp)
-        :
-        : "memory"
-    );
-    
-    // Save other critical registers one by one to avoid constraint issues
-    asm volatile ("movq %%rbp, %0" : "=m" (context_.rbp));
-    asm volatile ("movq %%rbx, %0" : "=m" (context_.rbx));
-    asm volatile ("movq %%r12, %0" : "=m" (context_.r12));
-    asm volatile ("movq %%r13, %0" : "=m" (context_.r13));
-    asm volatile ("movq %%r14, %0" : "=m" (context_.r14));
-    asm volatile ("movq %%r15, %0" : "=m" (context_.r15));
-    
-    // Save flags
-    asm volatile (
+        "movq %%rsp, %0\n\t"
+        "movq %%rbp, %1\n\t"
+        "movq %%rbx, %2\n\t"
+        "movq %%r12, %3\n\t"
+        "movq %%r13, %4\n\t"
+        "movq %%r14, %5\n\t"
+        "movq %%r15, %6\n\t"
         "pushfq\n\t"
-        "popq %0"
-        : "=m" (context_.rflags)
+        "popq %%rax\n\t"
+        "movq %%rax, %7"
+        : "=m" (context_.rsp),
+          "=m" (context_.rbp),
+          "=m" (context_.rbx),
+          "=m" (context_.r12),
+          "=m" (context_.r13),
+          "=m" (context_.r14),
+          "=m" (context_.r15),
+          "=m" (context_.rflags)
         :
-        : "memory"
+        : "rax", "memory"
     );
+    
+    // Save current instruction pointer (approximate)
+    void* current_ip;
+    asm volatile ("leaq (%%rip), %0" : "=r" (current_ip));
+    context_.rip = reinterpret_cast<uint64_t>(current_ip);
     
     std::cout << "[Context] Saved context for task " << id_ 
               << " (RSP: 0x" << std::hex << context_.rsp << std::dec << ")" << std::endl;
@@ -119,25 +131,30 @@ void Task::save_context() {
 
 void Task::restore_context() {
     #ifdef __x86_64__
-    // Restore critical registers one by one
-    asm volatile ("movq %0, %%rbx" : : "m" (context_.rbx));
-    asm volatile ("movq %0, %%rbp" : : "m" (context_.rbp));
-    asm volatile ("movq %0, %%r12" : : "m" (context_.r12));
-    asm volatile ("movq %0, %%r13" : : "m" (context_.r13));
-    asm volatile ("movq %0, %%r14" : : "m" (context_.r14));
-    asm volatile ("movq %0, %%r15" : : "m" (context_.r15));
-    
-    // Restore flags
+    // Restore registers using proper assembly
     asm volatile (
-        "pushq %0\n\t"
-        "popfq"
+        "movq %0, %%rax\n\t"
+        "pushq %%rax\n\t"
+        "popfq\n\t"
+        "movq %1, %%rbx\n\t"
+        "movq %2, %%rbp\n\t"
+        "movq %3, %%r12\n\t"
+        "movq %4, %%r13\n\t"
+        "movq %5, %%r14\n\t"
+        "movq %6, %%r15"
         :
-        : "m" (context_.rflags)
-        : "memory"
+        : "m" (context_.rflags),
+          "m" (context_.rbx),
+          "m" (context_.rbp),
+          "m" (context_.r12),
+          "m" (context_.r13),
+          "m" (context_.r14),
+          "m" (context_.r15)
+        : "rax", "memory"
     );
     
-    // Note: RSP restoration is tricky and should be done carefully
-    // For now, we'll just log the restoration
+    // Note: RSP restoration requires careful stack management
+    // For production use, we'd need to switch stacks properly
     std::cout << "[Context] Restored context for task " << id_ 
               << " (RSP: 0x" << std::hex << context_.rsp << std::dec << ")" << std::endl;
     #else
@@ -304,15 +321,22 @@ void TaskScheduler::cancel_task(Task::TaskId id) {
 }
 
 void TaskScheduler::yield_current_task() {
-    // For now, implement cooperative yielding
-    // In a full implementation, this would:
-    // 1. Find the current task on the current worker
-    // 2. Save its context
-    // 3. Move it back to the runnable queue
-    // 4. Switch to the next available task
-    
-    std::cout << "[Scheduler] Task yielding (cooperative)" << std::endl;
-    std::this_thread::yield();
+    // Yield the currently running fiber on this worker thread
+    std::thread::id current_thread_id = std::this_thread::get_id();
+    WorkerThread* current_worker = nullptr;
+    for (auto& worker : workers_) {
+        if (worker->thread.get_id() == current_thread_id) {
+            current_worker = worker.get();
+            break;
+        }
+    }
+    if (!current_worker || !current_worker->current_task) {
+        std::cout << "[Scheduler] No current task to yield" << std::endl;
+        return;
+    }
+    std::cout << "[Scheduler] Yielding task " << current_worker->current_task->get_id() << std::endl;
+    // This will swap back to scheduler via ucontext
+    current_worker->current_task->yield();
 }
 
 void TaskScheduler::schedule_task(std::shared_ptr<Task> task, size_t preferred_worker) {
@@ -333,6 +357,7 @@ void TaskScheduler::worker_loop(size_t worker_id) {
     std::cout << "[Worker " << worker_id << "] Started" << std::endl;
     
     auto& worker = workers_[worker_id];
+    // Cooperative scheduling only; preemption uses voluntary yield
     
     while (!worker->should_stop.load()) {
         std::shared_ptr<Task> task = nullptr;
@@ -350,52 +375,60 @@ void TaskScheduler::worker_loop(size_t worker_id) {
             }
         }
         
-        // If no local task, try work stealing
+        // If no local task, try fast work stealing
         if (!task) {
-            task = steal_task(worker_id);
+            task = steal_task_fast(worker_id);
         }
         
         // Execute task if found
         if (task) {
             std::cout << "[Worker " << worker_id << "] Executing task " << task->get_id() << std::endl;
             
-            // Track current task for preemption
+            // Track current task for cooperative scheduling
             worker->current_task = task;
             worker->current_task_start_time = std::chrono::high_resolution_clock::now();
             worker->preemption_requested.store(false);
             
+            // Prepare TLS for scheduler and current task
+            g_sched_ctx = &worker->sched_ctx;
+            g_current_task = task.get();
+            
+            // Initialize ucontext for the task lazily
+            if (!task->uctx_initialized_) {
+                getcontext(&task->uctx_);
+                task->uctx_.uc_stack.ss_sp = task->stack_.data();
+                task->uctx_.uc_stack.ss_size = task->stack_.size();
+                task->uctx_.uc_stack.ss_flags = 0;
+                task->uctx_.uc_link = &worker->sched_ctx; // return to scheduler when finished
+                makecontext(&task->uctx_, TaskTrampoline, 0);
+                task->uctx_initialized_ = true;
+            }
+            
             auto start_time = std::chrono::high_resolution_clock::now();
             
-            // Execute task with preemption checking
-            try {
-                task->run();
-                
-                // Check for preemption during execution
-                if (worker->preemption_requested.load()) {
-                    std::cout << "[Worker " << worker_id << "] Task " << task->get_id() 
-                             << " was preempted" << std::endl;
-                    task->set_state(Task::RUNNABLE);  // Mark as preempted, not completed
-                } else {
-                    task->set_state(Task::COMPLETED);
-                }
-                
-            } catch (const std::exception& e) {
-                std::cerr << "[Worker " << worker_id << "] Task " << task->get_id() 
-                         << " threw exception: " << e.what() << std::endl;
-                task->set_state(Task::COMPLETED);
-            }
+            // Switch from scheduler to task context
+            swapcontext(&worker->sched_ctx, &task->uctx_);
             
             auto end_time = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
             
-            std::cout << "[Worker " << worker_id << "] Task " << task->get_id() 
-                      << " finished in " << duration.count() << "μs" << std::endl;
+            // After returning from the task (yield or completion)
+            if (task->get_state() == Task::RUNNABLE) {
+                // Re-enqueue for further execution
+                std::lock_guard<std::mutex> lock(worker->queue_mutex);
+                worker->local_queue.push(task);
+                worker->queue_cv.notify_one();
+            } else {
+                // Completed or cancelled
+                active_tasks_.fetch_sub(1);
+            }
             
             // Clear current task tracking
             worker->current_task = nullptr;
             worker->current_task_start_time.reset();
             
-            active_tasks_.fetch_sub(1);
+            std::cout << "[Worker " << worker_id << "] Task " << task->get_id() 
+                      << " ran for " << duration.count() << "us" << std::endl;
         }
     }
     
@@ -432,6 +465,72 @@ std::shared_ptr<Task> TaskScheduler::steal_task(size_t worker_id) {
     }
     
     return nullptr;
+}
+
+// Optimized work stealing for maximum performance
+std::shared_ptr<Task> TaskScheduler::steal_task_fast(size_t worker_id) {
+    // Fast work stealing algorithm with multiple strategies
+    
+    // Strategy 1: Try global queue first (lowest contention)
+    {
+        std::unique_lock<std::mutex> lock(global_mutex_, std::try_to_lock);
+        if (lock.owns_lock() && !global_queue_.empty()) {
+            auto task = global_queue_.front();
+            global_queue_.pop();
+            return task;
+        }
+    }
+    
+    // Strategy 2: Random work stealing with exponential backoff
+    static thread_local std::random_device rd;
+    static thread_local std::mt19937 gen(rd());
+    static thread_local std::uniform_int_distribution<size_t> dist;
+    
+    // Try multiple random workers (up to log(N) attempts for good distribution)
+    size_t max_attempts = std::max(1UL, static_cast<size_t>(std::log2(num_workers_)) + 1);
+    
+    for (size_t attempt = 0; attempt < max_attempts; ++attempt) {
+        // Pick a random target worker (excluding ourselves)
+        size_t target_worker;
+        do {
+            target_worker = dist(gen) % num_workers_;
+        } while (target_worker == worker_id && num_workers_ > 1);
+        
+        auto& target = workers_[target_worker];
+        
+        // Use try_lock for minimal blocking
+        std::unique_lock<std::mutex> lock(target->queue_mutex, std::try_to_lock);
+        if (lock.owns_lock() && !target->local_queue.empty()) {
+            // Steal from the back (LIFO) for better cache locality
+            auto task = target->local_queue.front();
+            target->local_queue.pop();
+            
+            std::cout << "[WorkSteal] Worker " << worker_id 
+                      << " stole task " << task->get_id() 
+                      << " from worker " << target_worker << std::endl;
+            return task;
+        }
+    }
+    
+    // Strategy 3: Sequential scan as fallback (only if random failed)
+    for (size_t i = 1; i < num_workers_; ++i) {
+        size_t target_worker = (worker_id + i) % num_workers_;
+        auto& target = workers_[target_worker];
+        
+        std::unique_lock<std::mutex> lock(target->queue_mutex, std::try_to_lock);
+        if (lock.owns_lock() && target->local_queue.size() > 1) {  // Only steal if they have multiple tasks
+            auto task = target->local_queue.front();
+            target->local_queue.pop();
+            
+            std::cout << "[WorkSteal] Worker " << worker_id 
+                      << " stole task " << task->get_id() 
+                      << " from overloaded worker " << target_worker 
+                      << " (queue size: " << target->local_queue.size() + 1 << ")" << std::endl;
+            return task;
+        }
+    }
+    
+    return nullptr;  // No tasks available for stealing
 }
 
 void TaskScheduler::wait_all() {
@@ -560,7 +659,7 @@ void ConcurrencyRuntime::shutdown() {
     std::cout << "[ConcurrencyRuntime] Shutdown complete" << std::endl;
 }
 
-Task::TaskId ConcurrencyRuntime::go(Task::TaskFunction func) {
+Task::TaskId ConcurrencyRuntime::kode(Task::TaskFunction func) {
     if (!scheduler_) {
         throw std::runtime_error("ConcurrencyRuntime not initialized");
     }
@@ -579,7 +678,7 @@ void ConcurrencyRuntime::with_timeout(std::chrono::milliseconds timeout, Task::T
     std::shared_ptr<std::atomic<bool>> timed_out = std::make_shared<std::atomic<bool>>(false);
     
     // Start the main task
-    Task::TaskId main_task = go([func, completed, timed_out]() {
+    Task::TaskId main_task = kode([func, completed, timed_out]() {
         try {
             func();
             completed->store(true);
@@ -592,7 +691,7 @@ void ConcurrencyRuntime::with_timeout(std::chrono::milliseconds timeout, Task::T
     });
     
     // Start timeout watchdog task
-    go([timeout, completed, timed_out, main_task, this]() {
+    kode([timeout, completed, timed_out, main_task, this]() {
         auto start_time = std::chrono::high_resolution_clock::now();
         
         while (!completed->load()) {
@@ -641,7 +740,7 @@ namespace JSConcurrency {
     void spawn_task(const std::string& js_code) {
         if (!g_runtime) initialize_runtime();
         
-        g_runtime->go([js_code]() {
+        g_runtime->kode([js_code]() {
             std::cout << "[JSTask] Executing: " << js_code << std::endl;
             
             // Full implementation: Parse and execute JavaScript

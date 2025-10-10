@@ -39,6 +39,10 @@ bool KodeRuntime::Initialize() {
 }
 
 void KodeRuntime::Shutdown() {
+        // Shutdown concurrency runtime first
+        if (concurrency_runtime) {
+            concurrency_runtime->shutdown();
+        }
         if (loop) {
             uv_loop_close(loop);
         }
@@ -204,7 +208,7 @@ Task::TaskId KodeRuntime::spawnTask(const std::string& js_code) {
         throw std::runtime_error("Concurrency runtime not initialized");
     }
     
-    return concurrency_runtime->go([js_code, this]() {
+    return concurrency_runtime->kode([js_code, this]() {
         std::cout << "[ConcurrentTask] Executing: " << js_code << std::endl;
         // Execute the JavaScript code using our parser
         ExecuteString(js_code, "concurrent-task");
