@@ -11,6 +11,7 @@
 #include "../filesystem/fs.h"
 #include "../filesystem/modern_fs.h"
 #include "../parser/parser.h"
+#include "../concurrency/task.h"
 
 // Forward declarations
 class KodeRuntime;
@@ -31,6 +32,7 @@ class KodeRuntime {
 private:
     uv_loop_t* loop;
     std::map<std::string, std::function<void()>> builtins;
+    std::unique_ptr<ConcurrencyRuntime> concurrency_runtime;
     
 public:
     KodeRuntime();
@@ -53,6 +55,11 @@ public:
     
     // Event loop management
     void RunEventLoop();
+    
+    // Concurrency support (Go-style)
+    Task::TaskId spawnTask(const std::string& js_code);
+    void yieldTask();
+    void waitAllTasks();
     
     // Utility methods
     void PrintUsage(const char* program_name);

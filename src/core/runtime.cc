@@ -7,6 +7,9 @@ KodeRuntime::KodeRuntime() {
     // This is the heart of Node.js - it handles timers, I/O, etc.
     loop = uv_default_loop();
     setupBuiltins();
+    
+    // Initialize concurrency runtime
+    concurrency_runtime = std::make_unique<ConcurrencyRuntime>();
 }
 
 void KodeRuntime::setupBuiltins() {
@@ -19,12 +22,18 @@ void KodeRuntime::setupBuiltins() {
 
 bool KodeRuntime::Initialize() {
         std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
-        std::cout << "Learning Node.js runtime with modern async file system" << std::endl;
+        std::cout << "Next-generation Node.js with Go-style concurrency" << std::endl;
         std::cout << std::endl;
         
-        // Initialize both file system modules
+        // Initialize file system modules
         KodeFS::Initialize(loop);      // Legacy FS
         ModernFS::Initialize(loop);    // Modern FS
+        
+        // Initialize concurrency runtime
+        if (!concurrency_runtime->initialize()) {
+            std::cerr << "Failed to initialize concurrency runtime" << std::endl;
+            return false;
+        }
         
         return true;
 }
@@ -180,11 +189,37 @@ bool KodeRuntime::ExecuteFile(const std::string& filename) {
         
         return ExecuteString(source, filename);
 }
-    
-    // Run the event loop - this is what keeps Node.js alive
+
+// Run the event loop - this is what keeps Node.js alive
 void KodeRuntime::RunEventLoop() {
     std::cout << "Starting event loop..." << std::endl;
     // UV_RUN_DEFAULT means run until there are no more active handles
-    uv_run(loop, UV_RUN_DEFAULT);
+        uv_run(loop, UV_RUN_DEFAULT);
     std::cout << "Event loop finished." << std::endl;
+}
+
+// Go-style concurrency methods
+Task::TaskId KodeRuntime::spawnTask(const std::string& js_code) {
+    if (!concurrency_runtime) {
+        throw std::runtime_error("Concurrency runtime not initialized");
+    }
+    
+    return concurrency_runtime->go([js_code, this]() {
+        std::cout << "[ConcurrentTask] Executing: " << js_code << std::endl;
+        // Execute the JavaScript code using our parser
+        ExecuteString(js_code, "concurrent-task");
+        std::cout << "[ConcurrentTask] Completed: " << js_code << std::endl;
+    });
+}
+
+void KodeRuntime::yieldTask() {
+    if (concurrency_runtime) {
+        concurrency_runtime->yield();
+    }
+}
+
+void KodeRuntime::waitAllTasks() {
+    if (concurrency_runtime) {
+        concurrency_runtime->join_all();
+    }
 }

@@ -10,7 +10,7 @@ define INCLUDEUV
 endef
 
 define APP
-	src/main.cc src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc
+	src/main.cc src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc src/concurrency/task.cc
 endef
  
 define OBJ
@@ -30,19 +30,21 @@ export APP
 examples=\
   cpp-native-threads\
   uv-threads\
-  uv-timers\
   v8-print-hello
 
 # Build our Kode runtime (learning version with libuv only)
 build:
 	mkdir -p bin
-	$(CXX) $$APP -I $$INCLUDEUV -std=c++20 -pthread -o $$OUTPUT_FILE libuv/libuv.a -Wl,--no-as-needed -ldl
+	ccache g++ $APP -I $INCLUDEUV -std=c++20 -pthread -o $OUTPUT_FILE libuv/libuv.a -Wl,--no-as-needed -ldl
+
+test-concurrency:
+	mkdir -p bin
+	ccache g++ src/tests/concurrency_test.cc src/concurrency/task.cc -I $INCLUDEUV -std=c++20 -pthread -o bin/concurrency_test libuv/libuv.a -Wl,--no-as-needed -ldl
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:
 	mkdir -p bin
 	$(CXX) $$APP -I $$INCLUDE -I $$INCLUDEUV  -std=c++20 -pthread -o $$OUTPUT_FILE-v8 -DV8_COMPRESS_POINTERS -DV8_ENABLE_SANDBOX $$OBJ -Wl,--no-as-needed -ldl
-
 # make uv-threads (or any from examples)
 $(examples): % : examples/%.cpp
 	mkdir -p bin
