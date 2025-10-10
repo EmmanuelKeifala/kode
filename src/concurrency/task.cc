@@ -257,11 +257,17 @@ TaskScheduler::~TaskScheduler() {
 void TaskScheduler::start() {
     std::cout << "[Scheduler] Starting " << num_workers_ << " worker threads" << std::endl;
     
+    // Reserve to avoid reallocations while workers start
+    workers_.reserve(num_workers_);
+    // Create worker records first (without starting threads)
     for (size_t i = 0; i < num_workers_; ++i) {
         auto worker = std::make_unique<WorkerThread>();
         worker->worker_id = i;
-        worker->thread = std::thread(&TaskScheduler::worker_loop, this, i);
         workers_.push_back(std::move(worker));
+    }
+    // Now start worker threads after vector is fully populated
+    for (size_t i = 0; i < num_workers_; ++i) {
+        workers_[i]->thread = std::thread(&TaskScheduler::worker_loop, this, i);
     }
     
     if (preemptive_scheduling_) {
@@ -334,9 +340,19 @@ void TaskScheduler::yield_current_task() {
         std::cout << "[Scheduler] No current task to yield" << std::endl;
         return;
     }
-    std::cout << "[Scheduler] Yielding task " << current_worker->current_task->get_id() << std::endl;
+    // Copy shared_ptr under mutex to avoid data races
+    std::shared_ptr<Task> t;
+    {
+        std::lock_guard<std::mutex> ct_lock(current_worker->current_task_mutex);
+        t = current_worker->current_task;
+    }
+    if (!t) {
+        std::cout << "[Scheduler] No current task to yield (lost)" << std::endl;
+        return;
+    }
+    std::cout << "[Scheduler] Yielding task " << t->get_id() << std::endl;
     // This will swap back to scheduler via ucontext
-    current_worker->current_task->yield();
+    t->yield();
 }
 
 void TaskScheduler::schedule_task(std::shared_ptr<Task> task, size_t preferred_worker) {
@@ -358,6 +374,8 @@ void TaskScheduler::worker_loop(size_t worker_id) {
     
     auto& worker = workers_[worker_id];
     // Cooperative scheduling only; preemption uses voluntary yield
+    // Initialize scheduler context once so uc_link always points to a valid context
+    getcontext(&worker->sched_ctx);
     
     while (!worker->should_stop.load()) {
         std::shared_ptr<Task> task = nullptr;
@@ -384,10 +402,13 @@ void TaskScheduler::worker_loop(size_t worker_id) {
         if (task) {
             std::cout << "[Worker " << worker_id << "] Executing task " << task->get_id() << std::endl;
             
-            // Track current task for cooperative scheduling
-            worker->current_task = task;
-            worker->current_task_start_time = std::chrono::high_resolution_clock::now();
-            worker->preemption_requested.store(false);
+            // Track current task for cooperative scheduling (protect with mutex)
+            {
+                std::lock_guard<std::mutex> ct_lock(worker->current_task_mutex);
+                worker->current_task = task;
+                worker->current_task_start_time = std::chrono::high_resolution_clock::now();
+                worker->preemption_requested.store(false);
+            }
             
             // Prepare TLS for scheduler and current task
             g_sched_ctx = &worker->sched_ctx;
@@ -396,8 +417,12 @@ void TaskScheduler::worker_loop(size_t worker_id) {
             // Initialize ucontext for the task lazily
             if (!task->uctx_initialized_) {
                 getcontext(&task->uctx_);
-                task->uctx_.uc_stack.ss_sp = task->stack_.data();
-                task->uctx_.uc_stack.ss_size = task->stack_.size();
+                // Align stack to 16 bytes for ABI compliance
+                uintptr_t base = reinterpret_cast<uintptr_t>(task->stack_.data());
+                uintptr_t aligned = (base + 15) & ~static_cast<uintptr_t>(15);
+                size_t usable = task->stack_.size() - (aligned - base);
+                task->uctx_.uc_stack.ss_sp = reinterpret_cast<void*>(aligned);
+                task->uctx_.uc_stack.ss_size = usable;
                 task->uctx_.uc_stack.ss_flags = 0;
                 task->uctx_.uc_link = &worker->sched_ctx; // return to scheduler when finished
                 makecontext(&task->uctx_, TaskTrampoline, 0);
@@ -424,8 +449,11 @@ void TaskScheduler::worker_loop(size_t worker_id) {
             }
             
             // Clear current task tracking
-            worker->current_task = nullptr;
-            worker->current_task_start_time.reset();
+            {
+                std::lock_guard<std::mutex> ct_lock(worker->current_task_mutex);
+                worker->current_task = nullptr;
+                worker->current_task_start_time.reset();
+            }
             
             std::cout << "[Worker " << worker_id << "] Task " << task->get_id() 
                       << " ran for " << duration.count() << "us" << std::endl;
@@ -566,73 +594,23 @@ void TaskScheduler::preempt_long_running_tasks() {
     // Check all workers for long-running tasks
     for (size_t i = 0; i < workers_.size(); ++i) {
         auto& worker = workers_[i];
-        std::lock_guard<std::mutex> lock(worker->queue_mutex);
-        
-        // Full implementation of preemption:
-        
-        // 1. Check if current task has been running too long
-        if (worker->current_task && worker->current_task_start_time.has_value()) {
-            auto task_runtime = now - worker->current_task_start_time.value();
-            
-            if (task_runtime > time_slice_) {
-                std::cout << "[Preemption] Task " << worker->current_task->get_id() 
-                         << " on worker " << i << " exceeded time slice ("
-                         << std::chrono::duration_cast<std::chrono::milliseconds>(task_runtime).count() 
-                         << "ms)" << std::endl;
-                
-                // 2. Send preemption signal to worker thread
-                worker->preemption_requested.store(true);
-                
-                // 3. Save task state and reschedule it
-                if (worker->current_task->get_state() == Task::RUNNING) {
-                    // Mark task as preempted
-                    worker->current_task->set_state(Task::RUNNABLE);
-                    
-                    // Add back to queue for rescheduling
-                    worker->local_queue.push(worker->current_task);
-                    
-                    std::cout << "[Preemption] Rescheduled task " << worker->current_task->get_id() << std::endl;
+        // Cooperative-only preemption: do not manipulate queues or shared_ptr here
+        // Just request preemption; tasks must yield cooperatively
+        {
+            std::lock_guard<std::mutex> ct_lock(worker->current_task_mutex);
+            if (worker->current_task && worker->current_task_start_time.has_value()) {
+                auto task_runtime = now - worker->current_task_start_time.value();
+                if (task_runtime > time_slice_) {
+                    std::cout << "[Preemption] Task " << worker->current_task->get_id()
+                              << " on worker " << i << " exceeded time slice ("
+                              << std::chrono::duration_cast<std::chrono::milliseconds>(task_runtime).count()
+                              << "ms)" << std::endl;
+                    worker->preemption_requested.store(true);
                 }
-                
-                // Clear current task tracking
-                worker->current_task = nullptr;
-                worker->current_task_start_time.reset();
             }
         }
-        
-        // Also implement work balancing - move tasks from overloaded workers
-        if (worker->local_queue.size() > 10) {  // Threshold for load balancing
-            // Find least loaded worker
-            size_t min_load = SIZE_MAX;
-            size_t target_worker = SIZE_MAX;
-            
-            for (size_t j = 0; j < workers_.size(); ++j) {
-                if (j != i) {
-                    std::lock_guard<std::mutex> target_lock(workers_[j]->queue_mutex);
-                    if (workers_[j]->local_queue.size() < min_load) {
-                        min_load = workers_[j]->local_queue.size();
-                        target_worker = j;
-                    }
-                }
-            }
-            
-            // Move half the tasks to the least loaded worker
-            if (target_worker != SIZE_MAX && min_load < worker->local_queue.size() / 2) {
-                std::lock_guard<std::mutex> target_lock(workers_[target_worker]->queue_mutex);
-                
-                size_t tasks_to_move = worker->local_queue.size() / 2;
-                for (size_t k = 0; k < tasks_to_move; ++k) {
-                    auto task = worker->local_queue.front();
-                    worker->local_queue.pop();
-                    workers_[target_worker]->local_queue.push(task);
-                }
-                
-                workers_[target_worker]->queue_cv.notify_all();
-                
-                std::cout << "[LoadBalance] Moved " << tasks_to_move 
-                         << " tasks from worker " << i << " to worker " << target_worker << std::endl;
-            }
-        }
+        // Note: Work balancing via queue manipulation is disabled for stability.
+        // Fast work stealing already balances load without cross-thread queue moves here.
     }
 }
 

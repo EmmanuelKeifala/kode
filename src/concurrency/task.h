@@ -250,6 +250,7 @@ private:
         // Current task tracking for preemption
         std::shared_ptr<Task> current_task;
         std::optional<std::chrono::high_resolution_clock::time_point> current_task_start_time;
+        std::mutex current_task_mutex;  // protects current_task and its timing
         
         // Scheduler context for ucontext switching
         ucontext_t sched_ctx;
