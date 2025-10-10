@@ -4,8 +4,9 @@
 #include <functional>
 #include <fstream>
 #include <uv.h>
-#include "fs.h"     // Our file system module
-#include "parser.h" // Our JavaScript parser
+#include "fs.h"        // Legacy file system module
+#include "modern_fs.h" // Modern file system module
+#include "parser.h"    // Our JavaScript parser
 
 // Forward declaration - this tells the compiler that KodeRuntime exists
 // We need this because TimerData references KodeRuntime before it's defined
@@ -45,11 +46,12 @@ public:
     
     bool Initialize() {
         std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
-        std::cout << "Learning Node.js runtime with libuv event loop" << std::endl;
+        std::cout << "Learning Node.js runtime with modern async file system" << std::endl;
         std::cout << std::endl;
         
-        // Initialize the file system module (silently)
-        KodeFS::Initialize(loop);
+        // Initialize both file system modules
+        KodeFS::Initialize(loop);      // Legacy FS
+        ModernFS::Initialize(loop);    // Modern FS
         
         return true;
     }
@@ -128,13 +130,15 @@ public:
                 return true;
                 
             case KodeParser::Statement::FS_READ_FILE:
-                KodeFS::ReadFile(stmt.content, [](const std::string& error, const std::string& data) {
-                    if (!error.empty()) {
-                        std::cout << "Error: " << error << std::endl;
+                // Use modern FS with structured results
+                ModernFS::readFile(stmt.content, [](const ModernFS::ReadResult& result) {
+                    if (!result.success) {
+                        std::cout << "Error: " << result.error << std::endl;
                     } else {
-                        std::cout << data << std::endl;
+                        std::cout << result.content << std::endl;
+                        std::cout << "[FileInfo] " << result.info.toJSON() << std::endl;
                     }
-                }, this);
+                });
                 return true;
                 
             case KodeParser::Statement::FS_READ_FILE_SYNC:
@@ -150,18 +154,20 @@ public:
                 
             case KodeParser::Statement::FS_WRITE_FILE:
                 {
-                    std::string content = "Hello from Kode Runtime!";
+                    std::string content = "Hello from Kode Runtime with Modern FS!";
                     if (stmt.options.find("content") != stmt.options.end()) {
                         content = stmt.options.at("content");
                     }
                     
-                    KodeFS::WriteFile(stmt.content, content, [](const std::string& error) {
-                        if (!error.empty()) {
-                            std::cout << "Error: " << error << std::endl;
+                    // Use modern FS with structured results
+                    ModernFS::writeFile(stmt.content, content, [](const ModernFS::WriteResult& result) {
+                        if (!result.success) {
+                            std::cout << "Error: " << result.error << std::endl;
                         } else {
-                            std::cout << "File written successfully" << std::endl;
+                            std::cout << "Successfully wrote " << result.bytesWritten << " bytes" << std::endl;
+                            std::cout << "[FileInfo] " << result.info.toJSON() << std::endl;
                         }
-                    }, this);
+                    });
                 }
                 return true;
                 
