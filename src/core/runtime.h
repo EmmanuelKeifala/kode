@@ -5,6 +5,8 @@
 #include <map>
 #include <functional>
 #include <fstream>
+#include <unordered_map>
+#include <mutex>
 #include <uv.h>
 
 // Include our modular components
@@ -33,6 +35,9 @@ private:
     uv_loop_t* loop;
     std::map<std::string, std::function<void()>> builtins;
     std::unique_ptr<ConcurrencyRuntime> concurrency_runtime;
+    // Named channels for JS API
+    std::unordered_map<std::string, std::shared_ptr<Channel<std::string>>> channels_;
+    std::mutex channels_mutex_;
     
 public:
     KodeRuntime();
@@ -60,6 +65,11 @@ public:
     Task::TaskId spawnTask(const std::string& js_code);
     void yieldTask();
     void waitAllTasks();
+    // Kode concurrency helpers for parser
+    void createChannel(const std::string& name, size_t capacity);
+    void sendToChannel(const std::string& name, const std::string& value);
+    std::string receiveFromChannel(const std::string& name);
+    void spawnTaskWithTimeout(std::chrono::milliseconds timeout, const std::string& js_code);
     
     // Utility methods
     void PrintUsage(const char* program_name);

@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include <chrono>
 
 // Implementation of KodeRuntime class
 
@@ -156,6 +157,60 @@ bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
                     });
                 }
                 return true;
+
+            // Kode concurrency API routing
+            case KodeParser::Statement::KODE_SPAWN:
+                if (!stmt.content.empty()) {
+                    spawnTask(stmt.content);
+                }
+                return true;
+            case KodeParser::Statement::CH_CREATE:
+                {
+                    std::string name;
+                    size_t capacity = 0;
+                    auto itn = stmt.options.find("name");
+                    if (itn != stmt.options.end()) name = itn->second;
+                    auto itc = stmt.options.find("capacity");
+                    if (itc != stmt.options.end()) {
+                        try { capacity = static_cast<size_t>(std::stoll(itc->second)); } catch (...) { capacity = 0; }
+                    }
+                    if (!name.empty()) createChannel(name, capacity);
+                }
+                return true;
+            case KodeParser::Statement::CH_SEND:
+                {
+                    std::string name, value;
+                    auto itn = stmt.options.find("name");
+                    auto itv = stmt.options.find("value");
+                    if (itn != stmt.options.end()) name = itn->second;
+                    if (itv != stmt.options.end()) value = itv->second;
+                    if (!name.empty()) sendToChannel(name, value);
+                }
+                return true;
+            case KodeParser::Statement::CH_RECV:
+                {
+                    std::string name;
+                    auto itn = stmt.options.find("name");
+                    if (itn != stmt.options.end()) name = itn->second;
+                    if (!name.empty()) {
+                        std::string val = receiveFromChannel(name);
+                        if (!val.empty()) std::cout << "Received: " << val << std::endl;
+                    }
+                }
+                return true;
+            case KodeParser::Statement::YIELD_OP:
+                yieldTask();
+                return true;
+            case KodeParser::Statement::WITH_TIMEOUT:
+                {
+                    int ms = 0;
+                    auto it = stmt.options.find("timeout");
+                    if (it != stmt.options.end()) {
+                        try { ms = std::stoi(it->second); } catch (...) { ms = 0; }
+                    }
+                    spawnTaskWithTimeout(std::chrono::milliseconds(ms), stmt.content);
+                }
+                return true;
                 
             case KodeParser::Statement::REQUIRE:
                 std::cout << "[Runtime] Loading module: " << stmt.content << std::endl;
@@ -226,4 +281,49 @@ void KodeRuntime::waitAllTasks() {
     if (concurrency_runtime) {
         concurrency_runtime->join_all();
     }
+}
+
+// Kode concurrency helpers for parser
+void KodeRuntime::createChannel(const std::string& name, size_t capacity) {
+    std::lock_guard<std::mutex> lock(channels_mutex_);
+    channels_[name] = std::make_shared<Channel<std::string>>(capacity);
+}
+
+void KodeRuntime::sendToChannel(const std::string& name, const std::string& value) {
+    std::shared_ptr<Channel<std::string>> ch;
+    {
+        std::lock_guard<std::mutex> lock(channels_mutex_);
+        auto it = channels_.find(name);
+        if (it != channels_.end()) ch = it->second;
+    }
+    if (!ch) {
+        std::cout << "Error: Channel '" << name << "' not found" << std::endl;
+        return;
+    }
+    ch->send(value);
+}
+
+std::string KodeRuntime::receiveFromChannel(const std::string& name) {
+    std::shared_ptr<Channel<std::string>> ch;
+    {
+        std::lock_guard<std::mutex> lock(channels_mutex_);
+        auto it = channels_.find(name);
+        if (it != channels_.end()) ch = it->second;
+    }
+    if (!ch) {
+        std::cout << "Error: Channel '" << name << "' not found" << std::endl;
+        return "";
+    }
+    std::string value;
+    ch->receive(value);
+    return value;
+}
+
+void KodeRuntime::spawnTaskWithTimeout(std::chrono::milliseconds timeout, const std::string& js_code) {
+    if (!concurrency_runtime) {
+        throw std::runtime_error("Concurrency runtime not initialized");
+    }
+    concurrency_runtime->with_timeout(timeout, [this, js_code]() {
+        ExecuteString(js_code, "withTimeout-task");
+    });
 }

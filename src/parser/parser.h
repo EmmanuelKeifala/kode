@@ -21,6 +21,9 @@ public:
             
             // Async operations
             SET_TIMEOUT, SET_INTERVAL, CLEAR_TIMEOUT, CLEAR_INTERVAL,
+
+            // Kode concurrency API
+            KODE_SPAWN, CH_CREATE, CH_SEND, CH_RECV, YIELD_OP, WITH_TIMEOUT,
             
             // File system operations
             FS_READ_FILE, FS_WRITE_FILE, FS_READ_FILE_SYNC, FS_WRITE_FILE_SYNC,

@@ -4,8 +4,7 @@
 #include <sstream>
 #include <algorithm>
 
-// Forward declaration to avoid circular dependency
-class KodeRuntime;
+// No runtime includes here to avoid circular deps; runtime handles execution routing
 
 // Legacy interface for backward compatibility - simplified working version
 std::vector<KodeParser::Statement> KodeParser::Parse(const std::string& code) {
@@ -248,6 +247,8 @@ bool KodeParser::ExecuteStatement(const Statement& stmt, KodeRuntime* runtime) {
                 }
             }
             return true;
+        
+        // Kode concurrency API execution is handled by KodeRuntime::ExecuteStatement
             
         case Statement::FS_WRITE_FILE:
             {
