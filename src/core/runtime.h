@@ -17,7 +17,6 @@
 
 // Forward declarations
 class KodeRuntime;
-class HttpServer; // forward-declare HTTP server
 
 // Timer callback structure for setTimeout implementation
 struct TimerData {
@@ -39,8 +38,6 @@ private:
     // Named channels for JS API
     std::unordered_map<std::string, std::shared_ptr<Channel<std::string>>> channels_;
     std::mutex channels_mutex_;
-    // HTTP server instance
-    std::unique_ptr<HttpServer> http_server_;
     
 public:
     KodeRuntime();
@@ -73,11 +70,6 @@ public:
     void sendToChannel(const std::string& name, const std::string& value);
     std::string receiveFromChannel(const std::string& name);
     void spawnTaskWithTimeout(std::chrono::milliseconds timeout, const std::string& js_code);
-    // HTTP server controls
-    bool httpStart(uint16_t port);
-    void httpStop();
-    void httpRoute(const std::string& method, const std::string& path,
-                   const std::string& body, const std::string& contentType);
     
     // Utility methods
     void PrintUsage(const char* program_name);

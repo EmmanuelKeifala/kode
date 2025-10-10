@@ -1,6 +1,6 @@
 #include "runtime.h"
-#include "../http/http_server.h"
 #include <chrono>
+#include "../v8/engine_iface.h"
 
 // Implementation of KodeRuntime class
 
@@ -37,6 +37,14 @@ bool KodeRuntime::Initialize() {
             return false;
         }
         
+        // Initialize V8 engine if available
+        std::string v8err;
+        if (kode::v8embed::available()) {
+            if (!kode::v8embed::initialize(&v8err)) {
+                std::cerr << "V8 init failed: " << v8err << std::endl;
+            }
+        }
+        
         return true;
 }
 
@@ -44,6 +52,10 @@ void KodeRuntime::Shutdown() {
         // Shutdown concurrency runtime first
         if (concurrency_runtime) {
             concurrency_runtime->shutdown();
+        }
+        // Shutdown V8 if present
+        if (kode::v8embed::available()) {
+            kode::v8embed::shutdown();
         }
         if (loop) {
             uv_loop_close(loop);
@@ -85,24 +97,35 @@ void KodeRuntime::setTimeout(const std::string& message, int delay_ms) {
     // JavaScript executor using our parser
     // This parses JavaScript-like syntax and executes it
 bool KodeRuntime::ExecuteString(const std::string& source, const std::string& filename) {
-        // Parse the JavaScript code into statements
+        // Prefer V8 when available; allow disabling with KODE_USE_V8=0
+        bool v8_disabled = false;
+        if (const char* env = std::getenv("KODE_USE_V8")) {
+            if (std::string(env) == "0") v8_disabled = true;
+        }
+        if (!v8_disabled && kode::v8embed::available()) {
+            std::string err;
+            std::string result = kode::v8embed::runScript(source, &err);
+            if (!err.empty()) {
+                std::cerr << "[V8] Error: " << err << std::endl;
+                // Fall back to parser below
+            } else {
+                if (!result.empty()) {
+                    std::cout << result << std::endl;
+                }
+                return true;
+            }
+        }
+        // Fallback to simple parser pipeline
         std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
-        
         if (statements.empty()) {
             std::cout << "[Runtime] No executable statements found" << std::endl;
             return true;
         }
-        
         std::cout << "[Runtime] Executing " << statements.size() << " statement(s) from " << filename << std::endl;
-        
-        // Execute each statement
         bool success = true;
         for (const auto& stmt : statements) {
-            if (!ExecuteStatement(stmt)) {
-                success = false;
-            }
+            if (!ExecuteStatement(stmt)) success = false;
         }
-        
         return success;
 }
     
@@ -210,41 +233,6 @@ bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
                         try { ms = std::stoi(it->second); } catch (...) { ms = 0; }
                     }
                     spawnTaskWithTimeout(std::chrono::milliseconds(ms), stmt.content);
-                }
-                return true;
-
-            // HTTP server controls
-            case KodeParser::Statement::HTTP_START:
-                {
-                    int port = 0;
-                    auto it = stmt.options.find("port");
-                    if (it != stmt.options.end()) {
-                        try { port = std::stoi(it->second); } catch (...) { port = 0; }
-                    }
-                    if (port <= 0) port = 3000; // default port
-                    bool ok = httpStart(static_cast<uint16_t>(port));
-                    if (!ok) {
-                        std::cout << "Error: Failed to start HTTP server on port " << port << std::endl;
-                    } else {
-                        std::cout << "[HTTP] Listening on http://0.0.0.0:" << port << std::endl;
-                    }
-                }
-                return true;
-            case KodeParser::Statement::HTTP_STOP:
-                httpStop();
-                std::cout << "[HTTP] Server stopped" << std::endl;
-                return true;
-            case KodeParser::Statement::HTTP_ROUTE:
-                {
-                    std::string method, path, body, ctype = "text/plain";
-                    auto itM = stmt.options.find("method");
-                    auto itP = stmt.options.find("path");
-                    auto itC = stmt.options.find("contentType");
-                    if (itM != stmt.options.end()) method = itM->second;
-                    if (itP != stmt.options.end()) path = itP->second;
-                    if (itC != stmt.options.end()) ctype = itC->second;
-                    body = stmt.content;
-                    httpRoute(method, path, body, ctype);
                 }
                 return true;
                 
@@ -361,37 +349,5 @@ void KodeRuntime::spawnTaskWithTimeout(std::chrono::milliseconds timeout, const 
     }
     concurrency_runtime->with_timeout(timeout, [this, js_code]() {
         ExecuteString(js_code, "withTimeout-task");
-    });
-}
-
-bool KodeRuntime::httpStart(uint16_t port) {
-    if (!http_server_) {
-        http_server_ = std::make_unique<HttpServer>(loop);
-    }
-    return http_server_->start(port);
-}
-
-void KodeRuntime::httpStop() {
-    if (http_server_) {
-        http_server_->stop();
-        http_server_.reset();
-    }
-}
-
-void KodeRuntime::httpRoute(const std::string& method, const std::string& path,
-                            const std::string& body, const std::string& contentType) {
-    if (!http_server_) {
-        http_server_ = std::make_unique<HttpServer>(loop);
-        http_server_->start(3000);
-    }
-    http_server_->add_route(method, path, [body, contentType](const std::string& m,
-                                                              const std::string& p,
-                                                              const std::string& raw) -> HttpServer::Response {
-        HttpServer::Response r;
-        r.status = 200;
-        r.content_type = contentType;
-        r.body = body;
-        (void)m; (void)p; (void)raw;
-        return r;
     });
 }
