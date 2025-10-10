@@ -24,6 +24,9 @@ public:
 
             // Kode concurrency API
             KODE_SPAWN, CH_CREATE, CH_SEND, CH_RECV, YIELD_OP, WITH_TIMEOUT,
+
+            // HTTP server (libuv-based)
+            HTTP_START, HTTP_STOP, HTTP_ROUTE,
             
             // File system operations
             FS_READ_FILE, FS_WRITE_FILE, FS_READ_FILE_SYNC, FS_WRITE_FILE_SYNC,

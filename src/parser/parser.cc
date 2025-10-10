@@ -93,6 +93,33 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
         }
         return stmt;
     }
+    if (trimmed.rfind("http.start(", 0) == 0) {
+        stmt.type = Statement::HTTP_START;
+        auto args = ExtractFunctionArguments(trimmed);
+        int port = 0;
+        if (!args.empty()) {
+            try { port = std::stoi(ExtractStringLiteral(args[0])); } catch (...) { port = 0; }
+        }
+        stmt.options["port"] = std::to_string(port);
+        return stmt;
+    }
+    if (trimmed.rfind("http.route(", 0) == 0) {
+        stmt.type = Statement::HTTP_ROUTE;
+        auto args = ExtractFunctionArguments(trimmed);
+        if (args.size() >= 3) {
+            stmt.options["method"] = ExtractStringLiteral(args[0]);
+            stmt.options["path"] = ExtractStringLiteral(args[1]);
+            stmt.content = ExtractStringLiteral(args[2]); // body
+            if (args.size() >= 4) {
+                stmt.options["contentType"] = ExtractStringLiteral(args[3]);
+            }
+        }
+        return stmt;
+    }
+    if (trimmed == "http.stop()" || trimmed.rfind("http.stop(", 0) == 0) {
+        stmt.type = Statement::HTTP_STOP;
+        return stmt;
+    }
     if (trimmed.rfind("createChannel(", 0) == 0) {
         stmt.type = Statement::CH_CREATE;
         auto args = ExtractFunctionArguments(trimmed);

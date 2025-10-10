@@ -1,4 +1,5 @@
 #include "runtime.h"
+#include "../http/http_server.h"
 #include <chrono>
 
 // Implementation of KodeRuntime class
@@ -211,6 +212,41 @@ bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
                     spawnTaskWithTimeout(std::chrono::milliseconds(ms), stmt.content);
                 }
                 return true;
+
+            // HTTP server controls
+            case KodeParser::Statement::HTTP_START:
+                {
+                    int port = 0;
+                    auto it = stmt.options.find("port");
+                    if (it != stmt.options.end()) {
+                        try { port = std::stoi(it->second); } catch (...) { port = 0; }
+                    }
+                    if (port <= 0) port = 3000; // default port
+                    bool ok = httpStart(static_cast<uint16_t>(port));
+                    if (!ok) {
+                        std::cout << "Error: Failed to start HTTP server on port " << port << std::endl;
+                    } else {
+                        std::cout << "[HTTP] Listening on http://0.0.0.0:" << port << std::endl;
+                    }
+                }
+                return true;
+            case KodeParser::Statement::HTTP_STOP:
+                httpStop();
+                std::cout << "[HTTP] Server stopped" << std::endl;
+                return true;
+            case KodeParser::Statement::HTTP_ROUTE:
+                {
+                    std::string method, path, body, ctype = "text/plain";
+                    auto itM = stmt.options.find("method");
+                    auto itP = stmt.options.find("path");
+                    auto itC = stmt.options.find("contentType");
+                    if (itM != stmt.options.end()) method = itM->second;
+                    if (itP != stmt.options.end()) path = itP->second;
+                    if (itC != stmt.options.end()) ctype = itC->second;
+                    body = stmt.content;
+                    httpRoute(method, path, body, ctype);
+                }
+                return true;
                 
             case KodeParser::Statement::REQUIRE:
                 std::cout << "[Runtime] Loading module: " << stmt.content << std::endl;
@@ -325,5 +361,37 @@ void KodeRuntime::spawnTaskWithTimeout(std::chrono::milliseconds timeout, const 
     }
     concurrency_runtime->with_timeout(timeout, [this, js_code]() {
         ExecuteString(js_code, "withTimeout-task");
+    });
+}
+
+bool KodeRuntime::httpStart(uint16_t port) {
+    if (!http_server_) {
+        http_server_ = std::make_unique<HttpServer>(loop);
+    }
+    return http_server_->start(port);
+}
+
+void KodeRuntime::httpStop() {
+    if (http_server_) {
+        http_server_->stop();
+        http_server_.reset();
+    }
+}
+
+void KodeRuntime::httpRoute(const std::string& method, const std::string& path,
+                            const std::string& body, const std::string& contentType) {
+    if (!http_server_) {
+        http_server_ = std::make_unique<HttpServer>(loop);
+        http_server_->start(3000);
+    }
+    http_server_->add_route(method, path, [body, contentType](const std::string& m,
+                                                              const std::string& p,
+                                                              const std::string& raw) -> HttpServer::Response {
+        HttpServer::Response r;
+        r.status = 200;
+        r.content_type = contentType;
+        r.body = body;
+        (void)m; (void)p; (void)raw;
+        return r;
     });
 }
