@@ -84,8 +84,60 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
     
     std::string trimmed = TrimWhitespace(RemoveSemicolons(line));
     
+    // Kode concurrency API (must be detected BEFORE generic console/fs matching)
+    if (trimmed.rfind("kode(", 0) == 0) { // starts with
+        stmt.type = Statement::KODE_SPAWN;
+        auto args = ExtractFunctionArguments(trimmed);
+        if (!args.empty()) {
+            stmt.content = ExtractStringLiteral(args[0]);
+        }
+        return stmt;
+    }
+    if (trimmed.rfind("createChannel(", 0) == 0) {
+        stmt.type = Statement::CH_CREATE;
+        auto args = ExtractFunctionArguments(trimmed);
+        if (!args.empty()) stmt.options["name"] = ExtractStringLiteral(args[0]);
+        if (args.size() > 1) {
+            try { stmt.options["capacity"] = std::to_string(std::stoi(args[1])); }
+            catch (...) { stmt.options["capacity"] = "0"; }
+        } else {
+            stmt.options["capacity"] = "0";
+        }
+        return stmt;
+    }
+    if (trimmed.rfind("sendToChannel(", 0) == 0) {
+        stmt.type = Statement::CH_SEND;
+        auto args = ExtractFunctionArguments(trimmed);
+        if (args.size() >= 2) {
+            stmt.options["name"] = ExtractStringLiteral(args[0]);
+            stmt.options["value"] = ExtractStringLiteral(args[1]);
+        }
+        return stmt;
+    }
+    if (trimmed.rfind("receiveFromChannel(", 0) == 0) {
+        stmt.type = Statement::CH_RECV;
+        auto args = ExtractFunctionArguments(trimmed);
+        if (!args.empty()) stmt.options["name"] = ExtractStringLiteral(args[0]);
+        return stmt;
+    }
+    if (trimmed == "yield()" || trimmed.rfind("yield(", 0) == 0) {
+        stmt.type = Statement::YIELD_OP;
+        return stmt;
+    }
+    if (trimmed.rfind("withTimeout(", 0) == 0) {
+        stmt.type = Statement::WITH_TIMEOUT;
+        auto args = ExtractFunctionArguments(trimmed);
+        int ms = 0;
+        if (!args.empty()) {
+            try { ms = std::stoi(args[0]); } catch (...) { ms = 0; }
+        }
+        stmt.options["timeout"] = std::to_string(ms);
+        if (args.size() > 1) stmt.content = ExtractStringLiteral(args[1]);
+        return stmt;
+    }
+    
     // Console operations (enhanced)
-    if (trimmed.find("console.") != std::string::npos) {
+    if (trimmed.rfind("console.", 0) == 0) {
         stmt.type = Statement::CONSOLE_LOG;
         
         // Handle multiple console methods: log, error, warn, info
@@ -106,7 +158,7 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
     }
     
     // Async operations (enhanced)
-    else if (trimmed.find("setTimeout") != std::string::npos || trimmed.find("setInterval") != std::string::npos) {
+    else if (trimmed.rfind("setTimeout", 0) == 0 || trimmed.rfind("setInterval", 0) == 0) {
         stmt.type = Statement::SET_TIMEOUT;
         
         // Extract delay if specified
@@ -125,7 +177,7 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
     }
     
     // File system operations (enhanced)
-    else if (trimmed.find("fs.readFile") != std::string::npos && trimmed.find("Sync") == std::string::npos) {
+    else if (trimmed.rfind("fs.readFile", 0) == 0 && trimmed.find("Sync") == std::string::npos) {
         stmt.type = Statement::FS_READ_FILE;
         
         std::vector<std::string> args = ExtractFunctionArguments(trimmed);
@@ -145,7 +197,7 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
         }
     }
     
-    else if (trimmed.find("fs.readFileSync") != std::string::npos) {
+    else if (trimmed.rfind("fs.readFileSync", 0) == 0) {
         stmt.type = Statement::FS_READ_FILE_SYNC;
         
         std::vector<std::string> args = ExtractFunctionArguments(trimmed);
@@ -157,7 +209,7 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
         }
     }
     
-    else if (trimmed.find("fs.writeFile") != std::string::npos) {
+    else if (trimmed.rfind("fs.writeFile", 0) == 0) {
         stmt.type = Statement::FS_WRITE_FILE;
         
         std::vector<std::string> args = ExtractFunctionArguments(trimmed);
@@ -176,7 +228,7 @@ KodeParser::Statement KodeParser::ParseLine(const std::string& line) {
     }
     
     // Module system (enhanced)
-    else if (trimmed.find("require(") != std::string::npos || trimmed.find("import ") != std::string::npos) {
+    else if (trimmed.rfind("require(", 0) == 0 || trimmed.rfind("import ", 0) == 0) {
         stmt.type = Statement::REQUIRE;
         
         if (trimmed.find("require(") != std::string::npos) {
@@ -334,21 +386,59 @@ std::string KodeParser::RemoveSemicolons(const std::string& str) {
 std::vector<std::string> KodeParser::ExtractFunctionArguments(const std::string& line) {
     std::vector<std::string> args;
     
-    size_t start = line.find("(");
-    size_t end = line.rfind(")");
-    
+    size_t start = line.find('(');
+    size_t end = line.rfind(')');
     if (start == std::string::npos || end == std::string::npos || end <= start) {
         return args;
     }
     
-    std::string argsStr = line.substr(start + 1, end - start - 1);
+    std::string s = line.substr(start + 1, end - start - 1);
+    std::string cur;
+    bool inSingle = false, inDouble = false, inBacktick = false, escape = false;
+    int depth = 0;
     
-    // Simple comma splitting (doesn't handle nested parentheses)
-    std::stringstream ss(argsStr);
-    std::string arg;
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        if (escape) {
+            cur.push_back(c);
+            escape = false;
+            continue;
+        }
+        if (c == '\\') {
+            cur.push_back(c);
+            escape = true;
+            continue;
+        }
+        if (inSingle) {
+            if (c == '\'') inSingle = false;
+            cur.push_back(c);
+            continue;
+        }
+        if (inDouble) {
+            if (c == '"') inDouble = false;
+            cur.push_back(c);
+            continue;
+        }
+        if (inBacktick) {
+            if (c == '`') inBacktick = false;
+            cur.push_back(c);
+            continue;
+        }
+        if (c == '\'') { inSingle = true; cur.push_back(c); continue; }
+        if (c == '"') { inDouble = true; cur.push_back(c); continue; }
+        if (c == '`') { inBacktick = true; cur.push_back(c); continue; }
+        if (c == '(') { depth++; cur.push_back(c); continue; }
+        if (c == ')') { if (depth > 0) depth--; cur.push_back(c); continue; }
+        if (c == ',' && depth == 0) {
+            args.push_back(TrimWhitespace(cur));
+            cur.clear();
+            continue;
+        }
+        cur.push_back(c);
+    }
     
-    while (std::getline(ss, arg, ',')) {
-        args.push_back(TrimWhitespace(arg));
+    if (!cur.empty() || !s.empty()) {
+        args.push_back(TrimWhitespace(cur));
     }
     
     return args;
