@@ -4,7 +4,8 @@
 #include <functional>
 #include <fstream>
 #include <uv.h>
-#include "fs.h"  // Our file system module
+#include "fs.h"     // Our file system module
+#include "parser.h" // Our JavaScript parser
 
 // Forward declaration - this tells the compiler that KodeRuntime exists
 // We need this because TimerData references KodeRuntime before it's defined
@@ -44,11 +45,10 @@ public:
     
     bool Initialize() {
         std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
-        std::cout << "A learning Node.js runtime built with libuv" << std::endl;
-        std::cout << "Features: console.log, setTimeout, fs operations, event loop" << std::endl;
+        std::cout << "Learning Node.js runtime with libuv event loop" << std::endl;
         std::cout << std::endl;
         
-        // Initialize the file system module
+        // Initialize the file system module (silently)
         KodeFS::Initialize(loop);
         
         return true;
@@ -92,91 +92,96 @@ public:
         std::cout << "Timer set for " << delay_ms << "ms: " << message << std::endl;
     }
     
-    // Simple JavaScript command executor
-    // In a real runtime, this would be V8 parsing and executing JavaScript
-    // We're doing basic string matching to understand the concepts
+    // JavaScript executor using our parser
+    // This parses JavaScript-like syntax and executes it
     bool ExecuteString(const std::string& source, const std::string& filename = "script") {
-        std::cout << "Executing: " << source << std::endl;
+        // Parse the JavaScript code into statements
+        std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
         
-        // Parse different JavaScript-like commands
-        if (source.find("console.log") != std::string::npos) {
-            // Extract content between quotes for console.log
-            size_t start = source.find("'");
-            if (start == std::string::npos) start = source.find("\"");
-            
-            if (start != std::string::npos) {
-                size_t end = source.find_last_of("'\"");
-                if (end != std::string::npos && end > start) {
-                    std::string content = source.substr(start + 1, end - start - 1);
-                    std::cout << content << std::endl;
-                    return true;
-                }
-            }
-            std::cout << "Hello from Kode!" << std::endl;
-        } 
-        else if (source.find("fs.readFile") != std::string::npos) {
-            // Parse fs.readFile call - very basic parsing for learning
-            // In real Node.js: fs.readFile('filename', callback)
-            std::string testFile = "index.js";  // Default test file
-            
-            KodeFS::ReadFile(testFile, [](const std::string& error, const std::string& data) {
-                if (!error.empty()) {
-                    std::cout << "Error reading file: " << error << std::endl;
-                } else {
-                    std::cout << "File content:" << std::endl;
-                    std::cout << data << std::endl;
-                }
-            }, this);
-            
-            std::cout << "Started async file read of: " << testFile << std::endl;
-        }
-        else if (source.find("fs.writeFile") != std::string::npos) {
-            // Parse fs.writeFile call
-            // In real Node.js: fs.writeFile('filename', 'content', callback)
-            std::string testFile = "output.txt";
-            std::string content = "Hello from Kode Runtime!\nThis was written asynchronously.";
-            
-            KodeFS::WriteFile(testFile, content, [testFile](const std::string& error) {
-                if (!error.empty()) {
-                    std::cout << "Error writing file: " << error << std::endl;
-                } else {
-                    std::cout << "Successfully wrote to: " << testFile << std::endl;
-                }
-            }, this);
-            
-            std::cout << "Started async file write to: " << testFile << std::endl;
-        }
-        else if (source.find("fs.readFileSync") != std::string::npos) {
-            // Synchronous file read - blocks the thread
-            std::string testFile = "index.js";
-            std::string content = KodeFS::ReadFileSync(testFile);
-            
-            if (!content.empty()) {
-                std::cout << "Synchronous file content:" << std::endl;
-                std::cout << content << std::endl;
-            } else {
-                std::cout << "Failed to read file synchronously: " << testFile << std::endl;
-            }
-        }
-        else if (source.find("setTimeout") != std::string::npos) {
-            // Simple setTimeout parsing - in real Node.js this is much more complex
-            setTimeout("Timeout callback executed!", 1000);
-        } 
-        else if (source.find("+") != std::string::npos) {
-            // Basic math - could be expanded to a full expression evaluator
-            std::cout << "Math operation detected" << std::endl;
-        } 
-        else {
-            std::cout << "Unknown command: " << source << std::endl;
-            std::cout << "Available commands:" << std::endl;
-            std::cout << "  console.log('message')" << std::endl;
-            std::cout << "  setTimeout()" << std::endl;
-            std::cout << "  fs.readFile()" << std::endl;
-            std::cout << "  fs.writeFile()" << std::endl;
-            std::cout << "  fs.readFileSync()" << std::endl;
+        if (statements.empty()) {
+            std::cout << "[Runtime] No executable statements found" << std::endl;
+            return true;
         }
         
-        return true;
+        std::cout << "[Runtime] Executing " << statements.size() << " statement(s) from " << filename << std::endl;
+        
+        // Execute each statement
+        bool success = true;
+        for (const auto& stmt : statements) {
+            if (!ExecuteStatement(stmt)) {
+                success = false;
+            }
+        }
+        
+        return success;
+    }
+    
+    // Execute a single parsed statement
+    bool ExecuteStatement(const KodeParser::Statement& stmt) {
+        switch (stmt.type) {
+            case KodeParser::Statement::CONSOLE_LOG:
+                std::cout << stmt.content << std::endl;
+                return true;
+                
+            case KodeParser::Statement::SET_TIMEOUT:
+                setTimeout("Timeout callback executed!", 1000);
+                return true;
+                
+            case KodeParser::Statement::FS_READ_FILE:
+                KodeFS::ReadFile(stmt.content, [](const std::string& error, const std::string& data) {
+                    if (!error.empty()) {
+                        std::cout << "Error: " << error << std::endl;
+                    } else {
+                        std::cout << data << std::endl;
+                    }
+                }, this);
+                return true;
+                
+            case KodeParser::Statement::FS_READ_FILE_SYNC:
+                {
+                    std::string content = KodeFS::ReadFileSync(stmt.content);
+                    if (!content.empty()) {
+                        std::cout << content << std::endl;
+                    } else {
+                        std::cout << "Error: Could not read file " << stmt.content << std::endl;
+                    }
+                }
+                return true;
+                
+            case KodeParser::Statement::FS_WRITE_FILE:
+                {
+                    std::string content = "Hello from Kode Runtime!";
+                    if (stmt.options.find("content") != stmt.options.end()) {
+                        content = stmt.options.at("content");
+                    }
+                    
+                    KodeFS::WriteFile(stmt.content, content, [](const std::string& error) {
+                        if (!error.empty()) {
+                            std::cout << "Error: " << error << std::endl;
+                        } else {
+                            std::cout << "File written successfully" << std::endl;
+                        }
+                    }, this);
+                }
+                return true;
+                
+            case KodeParser::Statement::REQUIRE:
+                std::cout << "[Runtime] Loading module: " << stmt.content << std::endl;
+                return true;
+                
+            case KodeParser::Statement::VARIABLE_DECLARATION:
+                std::cout << "[Runtime] Variable: " << stmt.content << std::endl;
+                return true;
+                
+            default:
+                std::cout << "[Runtime] Unknown statement - available commands:" << std::endl;
+                std::cout << "  console.log('message')" << std::endl;
+                std::cout << "  setTimeout()" << std::endl;
+                std::cout << "  fs.readFile('filename', callback)" << std::endl;
+                std::cout << "  fs.writeFile('filename', 'content', callback)" << std::endl;
+                std::cout << "  fs.readFileSync('filename')" << std::endl;
+                return false;
+        }
     }
     
     // File execution - reads a file and executes it

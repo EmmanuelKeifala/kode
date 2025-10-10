@@ -1,8 +1,8 @@
 const fs = require('fs');
 
-fs.readFile('indx.js', (err, data) => {
+fs.readFile('index.js', (err, data) => {
     if (err) {
-        console.log(err);
+        console.log("err");
     } else {
         console.log(data.toString());
     }
