@@ -10,7 +10,7 @@ define INCLUDEUV
 endef
 
 define APP
-	src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc
+	src/main.cc src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc
 endef
  
 define OBJ
