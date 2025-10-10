@@ -4,6 +4,7 @@
 #include <functional>
 #include <fstream>
 #include <uv.h>
+#include "fs.h"  // Our file system module
 
 // Forward declaration - this tells the compiler that KodeRuntime exists
 // We need this because TimerData references KodeRuntime before it's defined
@@ -44,8 +45,11 @@ public:
     bool Initialize() {
         std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
         std::cout << "A learning Node.js runtime built with libuv" << std::endl;
-        std::cout << "Features: console.log, setTimeout, event loop" << std::endl;
+        std::cout << "Features: console.log, setTimeout, fs operations, event loop" << std::endl;
         std::cout << std::endl;
+        
+        // Initialize the file system module
+        KodeFS::Initialize(loop);
         
         return true;
     }
@@ -110,6 +114,50 @@ public:
             }
             std::cout << "Hello from Kode!" << std::endl;
         } 
+        else if (source.find("fs.readFile") != std::string::npos) {
+            // Parse fs.readFile call - very basic parsing for learning
+            // In real Node.js: fs.readFile('filename', callback)
+            std::string testFile = "index.js";  // Default test file
+            
+            KodeFS::ReadFile(testFile, [](const std::string& error, const std::string& data) {
+                if (!error.empty()) {
+                    std::cout << "Error reading file: " << error << std::endl;
+                } else {
+                    std::cout << "File content:" << std::endl;
+                    std::cout << data << std::endl;
+                }
+            }, this);
+            
+            std::cout << "Started async file read of: " << testFile << std::endl;
+        }
+        else if (source.find("fs.writeFile") != std::string::npos) {
+            // Parse fs.writeFile call
+            // In real Node.js: fs.writeFile('filename', 'content', callback)
+            std::string testFile = "output.txt";
+            std::string content = "Hello from Kode Runtime!\nThis was written asynchronously.";
+            
+            KodeFS::WriteFile(testFile, content, [testFile](const std::string& error) {
+                if (!error.empty()) {
+                    std::cout << "Error writing file: " << error << std::endl;
+                } else {
+                    std::cout << "Successfully wrote to: " << testFile << std::endl;
+                }
+            }, this);
+            
+            std::cout << "Started async file write to: " << testFile << std::endl;
+        }
+        else if (source.find("fs.readFileSync") != std::string::npos) {
+            // Synchronous file read - blocks the thread
+            std::string testFile = "index.js";
+            std::string content = KodeFS::ReadFileSync(testFile);
+            
+            if (!content.empty()) {
+                std::cout << "Synchronous file content:" << std::endl;
+                std::cout << content << std::endl;
+            } else {
+                std::cout << "Failed to read file synchronously: " << testFile << std::endl;
+            }
+        }
         else if (source.find("setTimeout") != std::string::npos) {
             // Simple setTimeout parsing - in real Node.js this is much more complex
             setTimeout("Timeout callback executed!", 1000);
@@ -120,6 +168,12 @@ public:
         } 
         else {
             std::cout << "Unknown command: " << source << std::endl;
+            std::cout << "Available commands:" << std::endl;
+            std::cout << "  console.log('message')" << std::endl;
+            std::cout << "  setTimeout()" << std::endl;
+            std::cout << "  fs.readFile()" << std::endl;
+            std::cout << "  fs.writeFile()" << std::endl;
+            std::cout << "  fs.readFileSync()" << std::endl;
         }
         
         return true;
@@ -192,6 +246,18 @@ int main(int argc, char* argv[]) {
         runtime.ExecuteString("setTimeout()");
         hasAsyncOperations = true;
         
+        std::cout << "\n3. File system operations:" << std::endl;
+        std::cout << "   a) Synchronous file read (blocks):" << std::endl;
+        runtime.ExecuteString("fs.readFileSync()");
+        
+        std::cout << "\n   b) Asynchronous file read (non-blocking):" << std::endl;
+        runtime.ExecuteString("fs.readFile()");
+        hasAsyncOperations = true;
+        
+        std::cout << "\n   c) Asynchronous file write:" << std::endl;
+        runtime.ExecuteString("fs.writeFile()");
+        hasAsyncOperations = true;
+        
     } else {
         // Process command line arguments
         for (int i = 1; i < argc; i++) {
@@ -212,7 +278,9 @@ int main(int argc, char* argv[]) {
                 success = runtime.ExecuteString(code, "command-line");
                 
                 // Check if we need to run event loop for async operations
-                if (code.find("setTimeout") != std::string::npos) {
+                if (code.find("setTimeout") != std::string::npos || 
+                    code.find("fs.readFile") != std::string::npos || 
+                    code.find("fs.writeFile") != std::string::npos) {
                     hasAsyncOperations = true;
                 }
             } 
