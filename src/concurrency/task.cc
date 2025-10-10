@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 #include <cstdint>
+#include <cstdlib>
 // POSIX signal-based preemption removed for stability; using cooperative ucontext
 
 // Simple logging helpers for structured, less noisy output
@@ -14,6 +15,19 @@ namespace {
     enum class LogLevel { Error = 0, Info = 1, Debug = 2 };
     static LogLevel g_log_level = LogLevel::Info;  // default: Info
     static std::mutex g_log_mutex;
+    static bool g_log_level_inited = false;
+    
+    void init_log_level_from_env() {
+        if (g_log_level_inited) return;
+        g_log_level_inited = true;
+        const char* env = std::getenv("KODE_LOG_LEVEL");
+        if (!env) return;
+        std::string s(env);
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return std::tolower(c); });
+        if (s == "debug") g_log_level = LogLevel::Debug;
+        else if (s == "info") g_log_level = LogLevel::Info;
+        else if (s == "error") g_log_level = LogLevel::Error;
+    }
     
     template<typename F>
     void log_locked(F f) {
@@ -270,6 +284,7 @@ bool Task::check_stack_overflow() {
 
 // TaskScheduler implementation
 TaskScheduler::TaskScheduler(size_t num_workers) {
+    init_log_level_from_env();
     if (num_workers == 0) {
         num_workers_ = std::thread::hardware_concurrency();
         if (num_workers_ == 0) num_workers_ = 4;  // Fallback
@@ -497,7 +512,7 @@ void TaskScheduler::worker_loop(size_t worker_id) {
         }
     }
     
-    std::cout << "[Worker " << worker_id << "] Stopped" << std::endl;
+    log_info(std::string("[Worker ") + std::to_string(worker_id) + "] Stopped");
 }
 
 std::shared_ptr<Task> TaskScheduler::steal_task(size_t worker_id) {
