@@ -131,6 +131,19 @@ private:
     static Statement ParseModuleOperation(const std::string& line, ParserState& state);
     static Statement ParseControlFlow(const std::string& line, ParserState& state);
     
+    // Specialized parsing functions
+    static Statement ParseConsoleOperation(const std::string& line, ParserState& state);
+    static Statement ParseFileSystemOperation(const std::string& line, ParserState& state);
+    static Statement ParseFunctionDeclaration(const std::string& line, ParserState& state);
+    static Statement ParseClassDeclaration(const std::string& line, ParserState& state);
+    
+    // Helper functions for advanced parsing
+    static void UpdateParserState(const std::string& line, ParserState& state);
+    static bool IsImportantCallbackStatement(const std::string& line);
+    static bool IsAsyncStatement(const Statement& stmt);
+    static bool IsModuleStatement(const Statement& stmt);
+    static bool IsVariableDeclaration(const Statement& stmt);
+    
     // Expression parsing
     static std::vector<std::string> ParseArguments(const std::string& args);
     static std::string ParseStringLiteral(const std::string& str);
