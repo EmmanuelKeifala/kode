@@ -1,50 +1,23 @@
-#include <iostream>
-#include <string>
-#include <map>
-#include <functional>
-#include <fstream>
-#include <uv.h>
-#include "fs.h"        // Legacy file system module
-#include "modern_fs.h" // Modern file system module
-#include "parser.h"    // Our JavaScript parser
+#include "runtime.h"
 
-// Forward declaration - this tells the compiler that KodeRuntime exists
-// We need this because TimerData references KodeRuntime before it's defined
-class KodeRuntime;
+// Implementation of KodeRuntime class
 
-// Timer callback structure - this holds data for our setTimeout implementation
-struct TimerData {
-    std::string message;    // What to print when timer fires
-    KodeRuntime* runtime;   // Pointer back to our runtime (for future use)
+KodeRuntime::KodeRuntime() {
+    // Get the default libuv event loop
+    // This is the heart of Node.js - it handles timers, I/O, etc.
+    loop = uv_default_loop();
+    setupBuiltins();
+}
+
+void KodeRuntime::setupBuiltins() {
+    // In a real runtime, these would be more complex
+    // For now, we're just learning the concepts
+    builtins["console.log"] = []() {
+        std::cout << "Console.log called!" << std::endl;
 };
+}
 
-// Our main JavaScript-like runtime class
-// This is similar to how Node.js works internally - it combines:
-// 1. An event loop (libuv) for async operations
-// 2. Built-in functions (like console.log, setTimeout)
-// 3. A simple command parser (instead of V8's full JS parser)
-class KodeRuntime {
-private:
-    uv_loop_t* loop;    // libuv event loop - handles all async operations
-    std::map<std::string, std::function<void()>> builtins;  // Built-in functions
-    
-public:
-    KodeRuntime() {
-        // Get the default libuv event loop
-        // This is the heart of Node.js - it handles timers, I/O, etc.
-        loop = uv_default_loop();
-        setupBuiltins();
-    }
-    
-    void setupBuiltins() {
-        // In a real runtime, these would be more complex
-        // For now, we're just learning the concepts
-        builtins["console.log"] = []() {
-            std::cout << "Console.log called!" << std::endl;
-        };
-    }
-    
-    bool Initialize() {
+bool KodeRuntime::Initialize() {
         std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
         std::cout << "Learning Node.js runtime with modern async file system" << std::endl;
         std::cout << std::endl;
@@ -54,18 +27,18 @@ public:
         ModernFS::Initialize(loop);    // Modern FS
         
         return true;
-    }
-    
-    void Shutdown() {
+}
+
+void KodeRuntime::Shutdown() {
         if (loop) {
             uv_loop_close(loop);
         }
         std::cout << "Kode Runtime shutdown complete." << std::endl;
-    }
-    
-    // Timer callback function - called when setTimeout timer expires
-    // This is a static function because libuv is a C library and needs C-style callbacks
-    static void onTimer(uv_timer_t* timer) {
+}
+
+// Timer callback function - called when setTimeout timer expires
+// This is a static function because libuv is a C library and needs C-style callbacks
+void KodeRuntime::onTimer(uv_timer_t* timer) {
         // Extract our data from the timer
         TimerData* data = static_cast<TimerData*>(timer->data);
         std::cout << "Timer fired: " << data->message << std::endl;
@@ -76,10 +49,10 @@ public:
             delete reinterpret_cast<uv_timer_t*>(handle);
         });
         delete data;
-    }
-    
-    // setTimeout implementation - this is how Node.js implements setTimeout internally
-    void setTimeout(const std::string& message, int delay_ms) {
+}
+
+// setTimeout implementation - this is how Node.js implements setTimeout internally
+void KodeRuntime::setTimeout(const std::string& message, int delay_ms) {
         // Create a new libuv timer
         uv_timer_t* timer = new uv_timer_t;
         TimerData* data = new TimerData{message, this};
@@ -92,11 +65,11 @@ public:
         uv_timer_start(timer, onTimer, delay_ms, 0);  // 0 = don't repeat
         
         std::cout << "Timer set for " << delay_ms << "ms: " << message << std::endl;
-    }
+}
     
     // JavaScript executor using our parser
     // This parses JavaScript-like syntax and executes it
-    bool ExecuteString(const std::string& source, const std::string& filename = "script") {
+bool KodeRuntime::ExecuteString(const std::string& source, const std::string& filename = "script") {
         // Parse the JavaScript code into statements
         std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
         
@@ -116,10 +89,10 @@ public:
         }
         
         return success;
-    }
+}
     
     // Execute a single parsed statement
-    bool ExecuteStatement(const KodeParser::Statement& stmt) {
+bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
         switch (stmt.type) {
             case KodeParser::Statement::CONSOLE_LOG:
                 std::cout << stmt.content << std::endl;
@@ -188,10 +161,10 @@ public:
                 std::cout << "  fs.readFileSync('filename')" << std::endl;
                 return false;
         }
-    }
+}
     
     // File execution - reads a file and executes it
-    bool ExecuteFile(const std::string& filename) {
+bool KodeRuntime::ExecuteFile(const std::string& filename) {
         std::ifstream file(filename);
         if (!file.is_open()) {
             std::cerr << "Cannot open file: " << filename << std::endl;
@@ -204,15 +177,15 @@ public:
         file.close();
         
         return ExecuteString(source, filename);
-    }
+}
     
     // Run the event loop - this is what keeps Node.js alive
     // It processes timers, I/O operations, etc.
-    void RunEventLoop() {
+void KodeRuntime::RunEventLoop() {
         std::cout << "Starting event loop..." << std::endl;
         // UV_RUN_DEFAULT means run until there are no more active handles
         uv_run(loop, UV_RUN_DEFAULT);
-    }
+}
 };
 
 void PrintUsage(const char* program_name) {
@@ -237,7 +210,7 @@ int main(int argc, char* argv[]) {
     if (!runtime.Initialize()) {
         std::cerr << "Failed to initialize runtime" << std::endl;
         return 1;
-    }
+}
     
     bool success = true;
     bool hasAsyncOperations = false;  // Track if we need to run event loop
@@ -269,7 +242,7 @@ int main(int argc, char* argv[]) {
         runtime.ExecuteString("fs.writeFile()");
         hasAsyncOperations = true;
         
-    } else {
+} else {
         // Process command line arguments
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
@@ -308,14 +281,14 @@ int main(int argc, char* argv[]) {
                 break;
             }
         }
-    }
+}
     
     // Run event loop if we have async operations
     // This is crucial - without this, setTimeout and other async operations won't work
     if (hasAsyncOperations) {
         std::cout << "\n=== Running Event Loop (this is what keeps Node.js alive) ===" << std::endl;
         runtime.RunEventLoop();
-    }
+}
     
     // Clean shutdown
     runtime.Shutdown();
