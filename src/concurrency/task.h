@@ -257,6 +257,7 @@ private:
     };
     
     std::vector<std::unique_ptr<WorkerThread>> workers_;
+    std::mutex workers_mutex_;  // protects workers_ during preemption and shutdown
     std::atomic<Task::TaskId> next_task_id_{1};
     std::atomic<size_t> active_tasks_{0};
     
@@ -271,6 +272,10 @@ private:
     size_t num_workers_;
     bool preemptive_scheduling_;
     std::chrono::milliseconds time_slice_{10};  // 10ms time slice
+    
+    // Preemption thread management
+    std::thread preemption_thread_;
+    std::atomic<bool> preemption_stop_{false};
     
 public:
     TaskScheduler(size_t num_workers = 0);  // 0 = auto-detect CPU cores

@@ -4,7 +4,39 @@
 #include <random>
 #include <cstring>
 #include <cmath>
+#include <mutex>
+#include <string>
+#include <cstdint>
 // POSIX signal-based preemption removed for stability; using cooperative ucontext
+
+// Simple logging helpers for structured, less noisy output
+namespace {
+    enum class LogLevel { Error = 0, Info = 1, Debug = 2 };
+    static LogLevel g_log_level = LogLevel::Info;  // default: Info
+    static std::mutex g_log_mutex;
+    
+    template<typename F>
+    void log_locked(F f) {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        f();
+    }
+    
+    void log_info(const std::string& msg) {
+        if (g_log_level >= LogLevel::Info) {
+            log_locked([&]() { std::cout << msg << std::endl; });
+        }
+    }
+    
+    void log_debug(const std::string& msg) {
+        if (g_log_level >= LogLevel::Debug) {
+            log_locked([&]() { std::cout << msg << std::endl; });
+        }
+    }
+    
+    void log_error(const std::string& msg) {
+        log_locked([&]() { std::cerr << msg << std::endl; });
+    }
+}
 
 // Thread-local scheduler context and current task for ucontext-based switching
 static thread_local ucontext_t* g_sched_ctx = nullptr;
@@ -247,7 +279,7 @@ TaskScheduler::TaskScheduler(size_t num_workers) {
     
     preemptive_scheduling_ = true;
     
-    std::cout << "[Scheduler] Initializing with " << num_workers_ << " worker threads" << std::endl;
+    log_info(std::string("[Scheduler] Initializing with ") + std::to_string(num_workers_) + " worker threads");
 }
 
 TaskScheduler::~TaskScheduler() {
@@ -255,7 +287,7 @@ TaskScheduler::~TaskScheduler() {
 }
 
 void TaskScheduler::start() {
-    std::cout << "[Scheduler] Starting " << num_workers_ << " worker threads" << std::endl;
+    log_info(std::string("[Scheduler] Starting ") + std::to_string(num_workers_) + " worker threads");
     
     // Reserve to avoid reallocations while workers start
     workers_.reserve(num_workers_);
@@ -276,8 +308,14 @@ void TaskScheduler::start() {
 }
 
 void TaskScheduler::stop() {
-    std::cout << "[Scheduler] Stopping scheduler..." << std::endl;
+    log_info("[Scheduler] Stopping scheduler...");
     
+    // Stop preemption thread first
+    this->preemption_stop_.store(true);
+    if (this->preemption_thread_.joinable()) {
+        this->preemption_thread_.join();
+    }
+
     // Signal all workers to stop
     for (auto& worker : workers_) {
         worker->should_stop.store(true);
@@ -292,7 +330,7 @@ void TaskScheduler::stop() {
     }
     
     workers_.clear();
-    std::cout << "[Scheduler] Stopped" << std::endl;
+    log_info("[Scheduler] Stopped");
 }
 
 Task::TaskId TaskScheduler::spawn(Task::TaskFunction func) {
@@ -308,7 +346,7 @@ Task::TaskId TaskScheduler::spawn(Task::TaskFunction func) {
         active_task_map_[id] = task;
     }
     
-    std::cout << "[Scheduler] Spawned task " << id << " (active: " << active_tasks_.load() << ")" << std::endl;
+    log_debug(std::string("[Scheduler] Spawned task ") + std::to_string(id) + " (active: " + std::to_string(active_tasks_.load()) + ")");
     return id;
 }
 
@@ -320,7 +358,7 @@ void TaskScheduler::cancel_task(Task::TaskId id) {
         auto task = it->second.lock();  // Convert weak_ptr to shared_ptr
         if (task) {
             task->cancel();
-            std::cout << "[Scheduler] Cancelled task " << id << std::endl;
+            log_info(std::string("[Scheduler] Cancelled task ") + std::to_string(id));
         }
         active_task_map_.erase(it);
     }
@@ -337,7 +375,7 @@ void TaskScheduler::yield_current_task() {
         }
     }
     if (!current_worker || !current_worker->current_task) {
-        std::cout << "[Scheduler] No current task to yield" << std::endl;
+        log_debug("[Scheduler] No current task to yield");
         return;
     }
     // Copy shared_ptr under mutex to avoid data races
@@ -347,10 +385,10 @@ void TaskScheduler::yield_current_task() {
         t = current_worker->current_task;
     }
     if (!t) {
-        std::cout << "[Scheduler] No current task to yield (lost)" << std::endl;
+        log_debug("[Scheduler] No current task to yield (lost)");
         return;
     }
-    std::cout << "[Scheduler] Yielding task " << t->get_id() << std::endl;
+    log_debug(std::string("[Scheduler] Yielding task ") + std::to_string(t->get_id()));
     // This will swap back to scheduler via ucontext
     t->yield();
 }
@@ -370,7 +408,7 @@ void TaskScheduler::schedule_task(std::shared_ptr<Task> task, size_t preferred_w
 }
 
 void TaskScheduler::worker_loop(size_t worker_id) {
-    std::cout << "[Worker " << worker_id << "] Started" << std::endl;
+    log_info(std::string("[Worker ") + std::to_string(worker_id) + "] Started");
     
     auto& worker = workers_[worker_id];
     // Cooperative scheduling only; preemption uses voluntary yield
@@ -400,7 +438,7 @@ void TaskScheduler::worker_loop(size_t worker_id) {
         
         // Execute task if found
         if (task) {
-            std::cout << "[Worker " << worker_id << "] Executing task " << task->get_id() << std::endl;
+            log_debug(std::string("[Worker ") + std::to_string(worker_id) + "] Executing task " + std::to_string(task->get_id()));
             
             // Track current task for cooperative scheduling (protect with mutex)
             {
@@ -455,8 +493,7 @@ void TaskScheduler::worker_loop(size_t worker_id) {
                 worker->current_task_start_time.reset();
             }
             
-            std::cout << "[Worker " << worker_id << "] Task " << task->get_id() 
-                      << " ran for " << duration.count() << "us" << std::endl;
+            log_debug(std::string("[Worker ") + std::to_string(worker_id) + "] Task " + std::to_string(task->get_id()) + " ran for " + std::to_string(duration.count()) + "us");
         }
     }
     
@@ -533,9 +570,9 @@ std::shared_ptr<Task> TaskScheduler::steal_task_fast(size_t worker_id) {
             auto task = target->local_queue.front();
             target->local_queue.pop();
             
-            std::cout << "[WorkSteal] Worker " << worker_id 
-                      << " stole task " << task->get_id() 
-                      << " from worker " << target_worker << std::endl;
+            log_debug(std::string("[WorkSteal] Worker ") + std::to_string(worker_id) +
+                      " stole task " + std::to_string(task->get_id()) +
+                      " from worker " + std::to_string(target_worker));
             return task;
         }
     }
@@ -550,10 +587,10 @@ std::shared_ptr<Task> TaskScheduler::steal_task_fast(size_t worker_id) {
             auto task = target->local_queue.front();
             target->local_queue.pop();
             
-            std::cout << "[WorkSteal] Worker " << worker_id 
-                      << " stole task " << task->get_id() 
-                      << " from overloaded worker " << target_worker 
-                      << " (queue size: " << target->local_queue.size() + 1 << ")" << std::endl;
+            log_debug(std::string("[WorkSteal] Worker ") + std::to_string(worker_id) +
+                      " stole task " + std::to_string(task->get_id()) +
+                      " from overloaded worker " + std::to_string(target_worker) +
+                      " (queue size: " + std::to_string(target->local_queue.size() + 1) + ")");
             return task;
         }
     }
@@ -562,36 +599,36 @@ std::shared_ptr<Task> TaskScheduler::steal_task_fast(size_t worker_id) {
 }
 
 void TaskScheduler::wait_all() {
-    std::cout << "[Scheduler] Waiting for all tasks to complete..." << std::endl;
+    log_info("[Scheduler] Waiting for all tasks to complete...");
     
     while (active_tasks_.load() > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    std::cout << "[Scheduler] All tasks completed" << std::endl;
+    log_info("[Scheduler] All tasks completed");
 }
 
 void TaskScheduler::setup_preemption() {
-    std::cout << "[Scheduler] Setting up preemptive scheduling (time slice: " 
-              << time_slice_.count() << "ms)" << std::endl;
+    log_info(std::string("[Scheduler] Setting up preemptive scheduling (time slice: ") 
+             + std::to_string(time_slice_.count()) + "ms)");
     
-    // Full implementation: Start preemption timer thread
-    std::thread preemption_thread([this]() {
-        while (!workers_.empty() && !workers_[0]->should_stop.load()) {
+    // Start managed preemption timer thread
+    preemption_stop_.store(false);
+    preemption_thread_ = std::thread([this]() {
+        while (!this->preemption_stop_.load()) {
             std::this_thread::sleep_for(time_slice_);
             preempt_long_running_tasks();
         }
     });
     
-    preemption_thread.detach();  // Let it run independently
-    
-    std::cout << "[Scheduler] Preemptive scheduling active" << std::endl;
+    log_info("[Scheduler] Preemptive scheduling active");
 }
 
 void TaskScheduler::preempt_long_running_tasks() {
     auto now = std::chrono::high_resolution_clock::now();
     
     // Check all workers for long-running tasks
+    std::lock_guard<std::mutex> wlock(workers_mutex_);
     for (size_t i = 0; i < workers_.size(); ++i) {
         auto& worker = workers_[i];
         // Cooperative-only preemption: do not manipulate queues or shared_ptr here
@@ -601,10 +638,9 @@ void TaskScheduler::preempt_long_running_tasks() {
             if (worker->current_task && worker->current_task_start_time.has_value()) {
                 auto task_runtime = now - worker->current_task_start_time.value();
                 if (task_runtime > time_slice_) {
-                    std::cout << "[Preemption] Task " << worker->current_task->get_id()
-                              << " on worker " << i << " exceeded time slice ("
-                              << std::chrono::duration_cast<std::chrono::milliseconds>(task_runtime).count()
-                              << "ms)" << std::endl;
+                    log_debug(std::string("[Preemption] Task ") + std::to_string(worker->current_task->get_id()) +
+                              " on worker " + std::to_string(i) + " exceeded time slice (" +
+                              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(task_runtime).count()) + "ms)");
                     worker->preemption_requested.store(true);
                 }
             }
