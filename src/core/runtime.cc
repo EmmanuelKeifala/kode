@@ -69,7 +69,7 @@ void KodeRuntime::setTimeout(const std::string& message, int delay_ms) {
     
     // JavaScript executor using our parser
     // This parses JavaScript-like syntax and executes it
-bool KodeRuntime::ExecuteString(const std::string& source, const std::string& filename = "script") {
+bool KodeRuntime::ExecuteString(const std::string& source, const std::string& filename) {
         // Parse the JavaScript code into statements
         std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
         
