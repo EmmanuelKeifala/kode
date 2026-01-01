@@ -42,7 +42,6 @@ class BasicTracedReference;
 template <class F>
 class TracedReference;
 
-class ArrayBuffer;
 class Boolean;
 class Context;
 class EscapableHandleScope;
@@ -52,6 +51,8 @@ class Isolate;
 class Object;
 template <class F1, class F2, class F3>
 class PersistentValueMapBase;
+template <class F1, class F2>
+class PersistentValueVector;
 class Primitive;
 class Private;
 template <class F>
@@ -63,8 +64,6 @@ template <class F>
 class Traced;
 class TypecheckWitness;
 class Utils;
-class Uint32;
-class Value;
 
 namespace debug {
 class ConsoleCallArguments;
@@ -81,25 +80,6 @@ class SamplingHeapProfiler;
 namespace api_internal {
 // Called when ToLocalChecked is called on an empty Local.
 V8_EXPORT void ToLocalEmpty();
-
-#ifdef V8_ENABLE_CHECKS
-template <typename T, typename V = Value>
-void TypeCheckLocal(V* value) {
-  // If `T` does not provide a `Cast` method we cannot check anything.
-  if constexpr (requires { T::Cast(value); }) {
-    // TODO(419454582): Remove all these exceptions.
-    if (std::is_same_v<Array, T> && value->IsArgumentsObject()) return;
-    if (std::is_same_v<ArrayBuffer, T> && value->IsSharedArrayBuffer()) return;
-    if (std::is_same_v<Object, T> && value->IsNull()) return;
-    if (std::is_same_v<Object, T> && value->IsString()) return;
-    if (std::is_same_v<Object, T> && value->IsUndefined()) return;
-    if (std::is_same_v<Uint32, T> && value->IsInt32()) return;
-    if (std::is_same_v<Object, T> && value->IsNumber()) return;
-    // Execute the actual check (part of the cast).
-    T::Cast(value);
-  }
-}
-#endif
 }  // namespace api_internal
 
 /**
@@ -118,16 +98,18 @@ void TypeCheckLocal(V* value) {
  */
 class V8_EXPORT V8_NODISCARD HandleScope {
  public:
-  V8_INLINE explicit HandleScope(Isolate* isolate);
+  explicit HandleScope(Isolate* isolate);
 
-  V8_INLINE ~HandleScope();
+  ~HandleScope();
 
   /**
    * Counts the number of allocated handles.
    */
   static int NumberOfHandles(Isolate* isolate);
 
-  V8_INLINE Isolate* GetIsolate() const { return isolate_; }
+  V8_INLINE Isolate* GetIsolate() const {
+    return reinterpret_cast<Isolate*>(i_isolate_);
+  }
 
   HandleScope(const HandleScope&) = delete;
   void operator=(const HandleScope&) = delete;
@@ -138,29 +120,12 @@ class V8_EXPORT V8_NODISCARD HandleScope {
  protected:
   V8_INLINE HandleScope() = default;
 
-  V8_INLINE void Initialize(Isolate* isolate);
+  void Initialize(Isolate* isolate);
 
-  V8_INLINE static internal::Address* CreateHandle(Isolate* i_isolate,
-                                                   internal::Address value);
+  static internal::Address* CreateHandle(internal::Isolate* i_isolate,
+                                         internal::Address value);
 
  private:
-  // Extend the HandleScope making room for more handles.  Not inlined.
-  static internal::Address* Extend(Isolate* isolate);
-  // Delete any extensions in HandleScope destructor.  Not called unless there
-  // are extensions.  Not inlined.
-  void DeleteExtensions(Isolate* isolate);
-
-#ifdef V8_ENABLE_CHECKS
-  // Non-inlined asserts on HandleScope constructor.
-  void DoInitializeAsserts(Isolate* isolate);
-  // Non-inlined assert for HandleScope destructor.
-  void AssertScopeLevelsMatch();
-  // Non-inlined asserts for HandleScope destructor.  Also zaps the slots
-  // if this is enabled.
-  void DoCloseScopeAsserts(int before, internal::Address* limit,
-                           internal::HandleScopeData* current);
-#endif
-
   // Declaring operator new and delete as deleted is not spec compliant.
   // Therefore declare them private instead to disable dynamic alloc
   void* operator new(size_t size);
@@ -168,7 +133,7 @@ class V8_EXPORT V8_NODISCARD HandleScope {
   void operator delete(void*, size_t);
   void operator delete[](void*, size_t);
 
-  Isolate* isolate_;
+  internal::Isolate* i_isolate_;
   internal::Address* prev_next_;
   internal::Address* prev_limit_;
 #ifdef V8_ENABLE_CHECKS
@@ -185,68 +150,13 @@ class V8_EXPORT V8_NODISCARD HandleScope {
   friend class Context;
 };
 
-HandleScope::HandleScope(Isolate* v8_isolate) { Initialize(v8_isolate); }
-
-void HandleScope::Initialize(Isolate* v8_isolate) {
-  using I = internal::Internals;
-  internal::HandleScopeData* current = I::GetHandleScopeData(v8_isolate);
-  isolate_ = v8_isolate;
-  prev_next_ = current->next;
-  prev_limit_ = current->limit;
-  current->level++;
-#ifdef V8_ENABLE_CHECKS
-  DoInitializeAsserts(v8_isolate);
-  scope_level_ = current->level;
-#endif
-}
-
-HandleScope::~HandleScope() {
-  if (V8_UNLIKELY(isolate_ == nullptr)) return;
-#ifdef V8_ENABLE_CHECKS
-  AssertScopeLevelsMatch();
-  int handle_count_before = NumberOfHandles(isolate_);
-#endif
-
-  using I = internal::Internals;
-  internal::HandleScopeData* current = I::GetHandleScopeData(isolate_);
-  std::swap(current->next, prev_next_);
-  current->level--;
-  internal::Address* limit = prev_next_;
-  if (V8_UNLIKELY(current->limit != prev_limit_)) {
-    current->limit = prev_limit_;
-    limit = prev_limit_;
-    DeleteExtensions(isolate_);
-  }
-#ifdef V8_ENABLE_CHECKS
-  DoCloseScopeAsserts(handle_count_before, limit, current);
-#else
-  (void)limit;  // Avoid unused variable warning.
-#endif
-}
-
-internal::Address* HandleScope::CreateHandle(Isolate* v8_isolate,
-                                             internal::Address value) {
-  using I = internal::Internals;
-  internal::HandleScopeData* data = I::GetHandleScopeData(v8_isolate);
-  internal::Address* result = data->next;
-  if (V8_UNLIKELY(result == data->limit)) {
-    result = Extend(v8_isolate);
-  }
-  // Update the current next field, set the value in the created handle,
-  // and return the result.
-  data->next = reinterpret_cast<internal::Address*>(
-      reinterpret_cast<internal::Address>(result) + sizeof(internal::Address));
-  *result = value;
-  return result;
-}
-
 /**
  * A base class for local handles.
- * Its implementation depends on whether direct handle support is enabled.
+ * Its implementation depends on whether direct local support is enabled.
  * When it is, a local handle contains a direct pointer to the referenced
  * object, otherwise it contains an indirect pointer.
  */
-#ifdef V8_ENABLE_DIRECT_HANDLE
+#ifdef V8_ENABLE_DIRECT_LOCAL
 
 template <typename T>
 class LocalBase : public api_internal::DirectHandleBase {
@@ -256,11 +166,7 @@ class LocalBase : public api_internal::DirectHandleBase {
 
   V8_INLINE LocalBase() = default;
 
-  V8_INLINE explicit LocalBase(internal::Address ptr) : DirectHandleBase(ptr) {
-#ifdef V8_ENABLE_CHECKS
-    if (!IsEmpty()) api_internal::TypeCheckLocal<T>(value<Value>());
-#endif
-  }
+  V8_INLINE explicit LocalBase(internal::Address ptr) : DirectHandleBase(ptr) {}
 
   template <typename S>
   V8_INLINE LocalBase(const LocalBase<S>& other) : DirectHandleBase(other) {}
@@ -275,17 +181,11 @@ class LocalBase : public api_internal::DirectHandleBase {
   }
 
   V8_INLINE static LocalBase<T> FromSlot(internal::Address* slot) {
-    if (slot == nullptr) return LocalBase<T>();
     return LocalBase<T>(*slot);
-  }
-
-  V8_INLINE static LocalBase<T> FromRepr(
-      internal::ValueHelper::InternalRepresentationType repr) {
-    return LocalBase<T>(repr);
   }
 };
 
-#else  // !V8_ENABLE_DIRECT_HANDLE
+#else  // !V8_ENABLE_DIRECT_LOCAL
 
 template <typename T>
 class LocalBase : public api_internal::IndirectHandleBase {
@@ -296,17 +196,14 @@ class LocalBase : public api_internal::IndirectHandleBase {
   V8_INLINE LocalBase() = default;
 
   V8_INLINE explicit LocalBase(internal::Address* location)
-      : IndirectHandleBase(location) {
-#ifdef V8_ENABLE_CHECKS
-    if (!IsEmpty()) api_internal::TypeCheckLocal<T>(value<Value>());
-#endif
-  }
+      : IndirectHandleBase(location) {}
 
   template <typename S>
   V8_INLINE LocalBase(const LocalBase<S>& other) : IndirectHandleBase(other) {}
 
   V8_INLINE static LocalBase<T> New(Isolate* isolate, internal::Address value) {
-    return LocalBase(HandleScope::CreateHandle(isolate, value));
+    return LocalBase(HandleScope::CreateHandle(
+        reinterpret_cast<internal::Isolate*>(isolate), value));
   }
 
   V8_INLINE static LocalBase<T> New(Isolate* isolate, T* that) {
@@ -318,14 +215,9 @@ class LocalBase : public api_internal::IndirectHandleBase {
   V8_INLINE static LocalBase<T> FromSlot(internal::Address* slot) {
     return LocalBase<T>(slot);
   }
-
-  V8_INLINE static LocalBase<T> FromRepr(
-      internal::ValueHelper::InternalRepresentationType repr) {
-    return LocalBase<T>(repr);
-  }
 };
 
-#endif  // V8_ENABLE_DIRECT_HANDLE
+#endif  // V8_ENABLE_DIRECT_LOCAL
 
 /**
  * An object reference managed by the v8 garbage collector.
@@ -365,19 +257,17 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
 #endif
 {
  public:
-  /**
-   * Default constructor: Returns an empty handle.
-   */
   V8_INLINE Local() = default;
 
-  /**
-   * Constructor for handling automatic up casting.
-   * Ex. Local<Object> can be passed when Local<Value> is expected but not
-   * the other way round.
-   */
   template <class S>
-    requires std::is_base_of_v<T, S>
-  V8_INLINE Local(Local<S> that) : LocalBase<T>(that) {}
+  V8_INLINE Local(Local<S> that) : LocalBase<T>(that) {
+    /**
+     * This check fails when trying to convert between incompatible
+     * handles. For example, converting from a Local<String> to a
+     * Local<Number>.
+     */
+    static_assert(std::is_base_of<T, S>::value, "type check");
+  }
 
   V8_INLINE T* operator->() const { return this->template value<T>(); }
 
@@ -417,7 +307,7 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
   /**
    * Cast a handle to a subclass, e.g. Local<Value> to Local<Object>.
    * This is only valid if the handle actually refers to a value of the
-   * target type or if the handle is empty.
+   * target type.
    */
   template <class S>
   V8_INLINE static Local<T> Cast(Local<S> that) {
@@ -433,7 +323,7 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
   /**
    * Calling this is equivalent to Local<S>::Cast().
    * In particular, this is only valid if the handle actually refers to a value
-   * of the target type or if the handle is empty.
+   * of the target type.
    */
   template <class S>
   V8_INLINE Local<S> As() const {
@@ -492,6 +382,8 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
   friend class InternalEscapableScope;
   template <class F1, class F2, class F3>
   friend class PersistentValueMapBase;
+  template <class F1, class F2>
+  friend class PersistentValueVector;
   template <class F>
   friend class ReturnValue;
   template <class F>
@@ -506,24 +398,20 @@ class V8_TRIVIAL_ABI Local : public LocalBase<T>,
   explicit Local(const Local<T>& other, no_checking_tag do_not_check)
       : LocalBase<T>(other), StackAllocated(do_not_check) {}
 
-  V8_INLINE explicit Local(const LocalBase<T>& other) : LocalBase<T>(other) {}
-
-  V8_INLINE static Local<T> FromRepr(
-      internal::ValueHelper::InternalRepresentationType repr) {
-    return Local<T>(LocalBase<T>::FromRepr(repr));
-  }
+  V8_INLINE explicit Local<T>(const LocalBase<T>& other)
+      : LocalBase<T>(other) {}
 
   V8_INLINE static Local<T> FromSlot(internal::Address* slot) {
     return Local<T>(LocalBase<T>::FromSlot(slot));
   }
 
-#ifdef V8_ENABLE_DIRECT_HANDLE
+#ifdef V8_ENABLE_DIRECT_LOCAL
   friend class TypecheckWitness;
 
   V8_INLINE static Local<T> FromAddress(internal::Address ptr) {
     return Local<T>(LocalBase<T>(ptr));
   }
-#endif  // V8_ENABLE_DIRECT_HANDLE
+#endif  // V8_ENABLE_DIRECT_LOCAL
 
   V8_INLINE static Local<T> New(Isolate* isolate, internal::Address value) {
     return Local<T>(LocalBase<T>::New(isolate, value));
@@ -551,18 +439,17 @@ class V8_TRIVIAL_ABI LocalUnchecked : public Local<T> {
 #if defined(V8_ENABLE_LOCAL_OFF_STACK_CHECK) && V8_HAS_ATTRIBUTE_TRIVIAL_ABI
   // In this case, the check is also enforced in the copy constructor and we
   // need to suppress it.
-  LocalUnchecked(
-      const LocalUnchecked& other) noexcept  // NOLINT(runtime/explicit)
+  LocalUnchecked(const LocalUnchecked& other)
       : Local<T>(other, Local<T>::do_not_check) {}
-  LocalUnchecked& operator=(const LocalUnchecked&) noexcept = default;
+  LocalUnchecked& operator=(const LocalUnchecked&) = default;
 #endif
 
   // Implicit conversion from Local.
-  LocalUnchecked(const Local<T>& other) noexcept  // NOLINT(runtime/explicit)
+  LocalUnchecked(const Local<T>& other)  // NOLINT(runtime/explicit)
       : Local<T>(other, Local<T>::do_not_check) {}
 };
 
-#ifdef V8_ENABLE_DIRECT_HANDLE
+#ifdef V8_ENABLE_DIRECT_LOCAL
 // Off-stack allocated direct locals must be registered as strong roots.
 // For off-stack indirect locals, this is not necessary.
 
@@ -573,9 +460,9 @@ class StrongRootAllocator<LocalUnchecked<T>> : public StrongRootAllocatorBase {
   static_assert(std::is_standard_layout_v<value_type>);
   static_assert(sizeof(value_type) == sizeof(Address));
 
-  template <typename HeapOrIsolateT>
-  explicit StrongRootAllocator(HeapOrIsolateT* heap_or_isolate)
-      : StrongRootAllocatorBase(heap_or_isolate) {}
+  explicit StrongRootAllocator(Heap* heap) : StrongRootAllocatorBase(heap) {}
+  explicit StrongRootAllocator(v8::Isolate* isolate)
+      : StrongRootAllocatorBase(isolate) {}
   template <typename U>
   StrongRootAllocator(const StrongRootAllocator<U>& other) noexcept
       : StrongRootAllocatorBase(other) {}
@@ -587,7 +474,7 @@ class StrongRootAllocator<LocalUnchecked<T>> : public StrongRootAllocatorBase {
     return deallocate_impl(reinterpret_cast<Address*>(p), n);
   }
 };
-#endif  // V8_ENABLE_DIRECT_HANDLE
+#endif  // V8_ENABLE_DIRECT_LOCAL
 }  // namespace internal
 
 template <typename T>
@@ -595,7 +482,7 @@ class LocalVector {
  private:
   using element_type = internal::LocalUnchecked<T>;
 
-#ifdef V8_ENABLE_DIRECT_HANDLE
+#ifdef V8_ENABLE_DIRECT_LOCAL
   using allocator_type = internal::StrongRootAllocator<element_type>;
 
   static allocator_type make_allocator(Isolate* isolate) noexcept {
@@ -607,7 +494,7 @@ class LocalVector {
   static allocator_type make_allocator(Isolate* isolate) noexcept {
     return allocator_type();
   }
-#endif  // V8_ENABLE_DIRECT_HANDLE
+#endif  // V8_ENABLE_DIRECT_LOCAL
 
   using vector_type = std::vector<element_type, allocator_type>;
 
@@ -674,18 +561,13 @@ class LocalVector {
 
   LocalVector<T>& operator=(std::initializer_list<Local<T>> init) {
     backing_.clear();
-    backing_.reserve(init.size());
     backing_.insert(backing_.end(), init.begin(), init.end());
     return *this;
   }
 
   void push_back(const Local<T>& x) { backing_.push_back(x); }
   void pop_back() { backing_.pop_back(); }
-
-  template <typename... Args>
-  void emplace_back(Args&&... args) {
-    backing_.push_back(value_type{std::forward<Args>(args)...});
-  }
+  void emplace_back(const Local<T>& x) { backing_.emplace_back(x); }
 
   void clear() noexcept { backing_.clear(); }
   void resize(size_t n) { backing_.resize(n); }
@@ -733,22 +615,9 @@ using Handle = Local<T>;
 template <class T>
 class MaybeLocal {
  public:
-  /**
-   * Default constructor: Returns an empty handle.
-   */
-  V8_INLINE MaybeLocal() = default;
-  /**
-   * Implicitly construct MaybeLocal from Local.
-   */
+  V8_INLINE MaybeLocal() : local_() {}
   template <class S>
-    requires std::is_base_of_v<T, S>
   V8_INLINE MaybeLocal(Local<S> that) : local_(that) {}
-  /**
-   * Implicitly up-cast MaybeLocal<S> to MaybeLocal<T> if T is a base of S.
-   */
-  template <class S>
-    requires std::is_base_of_v<T, S>
-  V8_INLINE MaybeLocal(MaybeLocal<S> that) : local_(that.local_) {}
 
   V8_INLINE bool IsEmpty() const { return local_.IsEmpty(); }
 
@@ -783,17 +652,23 @@ class MaybeLocal {
   /**
    * Cast a handle to a subclass, e.g. MaybeLocal<Value> to MaybeLocal<Object>.
    * This is only valid if the handle actually refers to a value of the target
-   * type or if the handle is empty.
+   * type.
    */
   template <class S>
   V8_INLINE static MaybeLocal<T> Cast(MaybeLocal<S> that) {
-    return MaybeLocal<T>{Local<T>::Cast(that.local_)};
+#ifdef V8_ENABLE_CHECKS
+    // If we're going to perform the type check then we have to check
+    // that the handle isn't empty before doing the checked cast.
+    if (that.IsEmpty()) return MaybeLocal<T>();
+    T::Cast(that.local_.template value<S>());
+#endif
+    return MaybeLocal<T>(that.local_);
   }
 
   /**
    * Calling this is equivalent to MaybeLocal<S>::Cast().
    * In particular, this is only valid if the handle actually refers to a value
-   * of the target type or if the handle is empty.
+   * of the target type.
    */
   template <class S>
   V8_INLINE MaybeLocal<S> As() const {
@@ -842,7 +717,7 @@ class V8_EXPORT V8_NODISCARD EscapableHandleScope
   V8_INLINE ~EscapableHandleScope() = default;
   template <class T>
   V8_INLINE Local<T> Escape(Local<T> value) {
-#ifdef V8_ENABLE_DIRECT_HANDLE
+#ifdef V8_ENABLE_DIRECT_LOCAL
     return value;
 #else
     if (value.IsEmpty()) return value;

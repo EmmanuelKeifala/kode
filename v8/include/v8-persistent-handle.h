@@ -15,6 +15,8 @@ namespace v8 {
 class Isolate;
 template <class K, class V, class T>
 class PersistentValueMapBase;
+template <class V, class T>
+class PersistentValueVector;
 template <class T>
 class Global;
 template <class T>
@@ -46,11 +48,7 @@ class Eternal : public api_internal::IndirectHandleBase {
  public:
   V8_INLINE Eternal() = default;
 
-  /**
-   * Constructor for handling automatic up casting.
-   */
   template <class S>
-    requires(std::is_base_of_v<T, S>)
   V8_INLINE Eternal(Isolate* isolate, Local<S> handle) {
     Set(isolate, handle);
   }
@@ -63,8 +61,8 @@ class Eternal : public api_internal::IndirectHandleBase {
   }
 
   template <class S>
-    requires(std::is_base_of_v<T, S>)
   void Set(Isolate* isolate, Local<S> handle) {
+    static_assert(std::is_base_of<T, S>::value, "type check");
     slot() =
         api_internal::Eternalize(isolate, *handle.template UnsafeAs<Value>());
   }
@@ -206,6 +204,8 @@ class PersistentBase : public api_internal::IndirectHandleBase {
   friend class ReturnValue;
   template <class F1, class F2, class F3>
   friend class PersistentValueMapBase;
+  template <class F1, class F2>
+  friend class PersistentValueVector;
   friend class Object;
   friend class internal::ValueHelper;
 
@@ -237,6 +237,21 @@ class NonCopyablePersistentTraits {
 };
 
 /**
+ * Helper class traits to allow copying and assignment of Persistent.
+ * This will clone the contents of storage cell, but not any of the flags, etc.
+ */
+template <class T>
+struct V8_DEPRECATED("Use v8::Global instead") CopyablePersistentTraits {
+  using CopyablePersistent = Persistent<T, CopyablePersistentTraits<T>>;
+  static const bool kResetInDestructor = true;
+  template <class S, class M>
+  static V8_INLINE void Copy(const Persistent<S, M>& source,
+                             CopyablePersistent* dest) {
+    // do nothing, just allow copy
+  }
+};
+
+/**
  * A PersistentBase which allows copy and assignment.
  *
  * Copy, assignment and destructor behavior is controlled by the traits
@@ -255,26 +270,28 @@ class Persistent : public PersistentBase<T> {
   V8_INLINE Persistent() = default;
 
   /**
-   * Construct a Persistent from a Local with automatic up casting.
+   * Construct a Persistent from a Local.
    * When the Local is non-empty, a new storage cell is created
    * pointing to the same object, and no flags are set.
    */
   template <class S>
-    requires(std::is_base_of_v<T, S>)
   V8_INLINE Persistent(Isolate* isolate, Local<S> that)
       : PersistentBase<T>(
-            PersistentBase<T>::New(isolate, that.template value<S>())) {}
+            PersistentBase<T>::New(isolate, that.template value<S>())) {
+    static_assert(std::is_base_of<T, S>::value, "type check");
+  }
 
   /**
-   * Construct a Persistent from a Persistent with automatic up casting.
+   * Construct a Persistent from a Persistent.
    * When the Persistent is non-empty, a new storage cell is created
    * pointing to the same object, and no flags are set.
    */
   template <class S, class M2>
-    requires(std::is_base_of_v<T, S>)
   V8_INLINE Persistent(Isolate* isolate, const Persistent<S, M2>& that)
       : PersistentBase<T>(
-            PersistentBase<T>::New(isolate, that.template value<S>())) {}
+            PersistentBase<T>::New(isolate, that.template value<S>())) {
+    static_assert(std::is_base_of<T, S>::value, "type check");
+  }
 
   /**
    * The copy constructors and assignment operator create a Persistent
@@ -354,26 +371,28 @@ class Global : public PersistentBase<T> {
   V8_INLINE Global() = default;
 
   /**
-   * Construct a Global from a Local with automatic up casting.
+   * Construct a Global from a Local.
    * When the Local is non-empty, a new storage cell is created
    * pointing to the same object, and no flags are set.
    */
   template <class S>
-    requires(std::is_base_of_v<T, S>)
   V8_INLINE Global(Isolate* isolate, Local<S> that)
       : PersistentBase<T>(
-            PersistentBase<T>::New(isolate, that.template value<S>())) {}
+            PersistentBase<T>::New(isolate, that.template value<S>())) {
+    static_assert(std::is_base_of<T, S>::value, "type check");
+  }
 
   /**
-   * Construct a Global from a PersistentBase with automatic up casting.
+   * Construct a Global from a PersistentBase.
    * When the Persistent is non-empty, a new storage cell is created
    * pointing to the same object, and no flags are set.
    */
   template <class S>
-    requires(std::is_base_of_v<T, S>)
   V8_INLINE Global(Isolate* isolate, const PersistentBase<S>& that)
       : PersistentBase<T>(
-            PersistentBase<T>::New(isolate, that.template value<S>())) {}
+            PersistentBase<T>::New(isolate, that.template value<S>())) {
+    static_assert(std::is_base_of<T, S>::value, "type check");
+  }
 
   /**
    * Move constructor.
@@ -431,7 +450,7 @@ internal::Address* PersistentBase<T>::New(Isolate* isolate, T* that) {
 template <class T, class M>
 template <class S, class M2>
 void Persistent<T, M>::Copy(const Persistent<S, M2>& that) {
-  static_assert(std::is_base_of_v<T, S>, "type check");
+  static_assert(std::is_base_of<T, S>::value, "type check");
   this->Reset();
   if (that.IsEmpty()) return;
   this->slot() = api_internal::CopyGlobalReference(that.slot());
@@ -459,7 +478,7 @@ void PersistentBase<T>::Reset() {
 template <class T>
 template <class S>
 void PersistentBase<T>::Reset(Isolate* isolate, const Local<S>& other) {
-  static_assert(std::is_base_of_v<T, S>, "type check");
+  static_assert(std::is_base_of<T, S>::value, "type check");
   Reset();
   if (other.IsEmpty()) return;
   this->slot() = New(isolate, *other);
@@ -473,7 +492,7 @@ template <class T>
 template <class S>
 void PersistentBase<T>::Reset(Isolate* isolate,
                               const PersistentBase<S>& other) {
-  static_assert(std::is_base_of_v<T, S>, "type check");
+  static_assert(std::is_base_of<T, S>::value, "type check");
   Reset();
   if (other.IsEmpty()) return;
   this->slot() = New(isolate, other.template value<S>());
@@ -489,15 +508,8 @@ V8_INLINE void PersistentBase<T>::SetWeak(
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-function-type"
 #endif
-#if __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wcast-function-type"
-#endif
   api_internal::MakeWeak(this->slot(), parameter,
                          reinterpret_cast<Callback>(callback), type);
-#if __clang__
-#pragma clang diagnostic pop
-#endif
 #if (__GNUC__ >= 8) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -546,7 +558,7 @@ Global<T>::Global(Global&& other) : PersistentBase<T>(other.slot()) {
 template <class T>
 template <class S>
 Global<T>& Global<T>::operator=(Global<S>&& rhs) {
-  static_assert(std::is_base_of_v<T, S>, "type check");
+  static_assert(std::is_base_of<T, S>::value, "type check");
   if (this != &rhs) {
     this->Reset();
     if (!rhs.IsEmpty()) {

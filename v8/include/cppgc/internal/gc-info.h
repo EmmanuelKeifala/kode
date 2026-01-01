@@ -94,11 +94,12 @@ struct GCInfoTrait final {
     return index;
   }
 
-  static constexpr void CheckCallbacksAreDefined() {
+  static constexpr bool CheckCallbacksAreDefined() {
     // No USE() macro available.
     (void)static_cast<TraceCallback>(TraceTrait<T>::Trace);
     (void)static_cast<FinalizationCallback>(FinalizerTrait<T>::kCallback);
     (void)static_cast<NameCallback>(NameTrait<T>::GetName);
+    return true;
   }
 };
 
@@ -108,10 +109,10 @@ struct GCInfoTrait final {
 template <typename T, typename ParentMostGarbageCollectedType>
 struct GCInfoFolding final {
   static constexpr bool kHasVirtualDestructorAtBase =
-      std::has_virtual_destructor_v<ParentMostGarbageCollectedType>;
+      std::has_virtual_destructor<ParentMostGarbageCollectedType>::value;
   static constexpr bool kBothTypesAreTriviallyDestructible =
-      std::is_trivially_destructible_v<ParentMostGarbageCollectedType> &&
-      std::is_trivially_destructible_v<T>;
+      std::is_trivially_destructible<ParentMostGarbageCollectedType>::value &&
+      std::is_trivially_destructible<T>::value;
   static constexpr bool kHasCustomFinalizerDispatchAtBase =
       internal::HasFinalizeGarbageCollectedObject<
           ParentMostGarbageCollectedType>::value;
@@ -126,22 +127,19 @@ struct GCInfoFolding final {
   // configuration. Only a single GCInfo (for `ResultType` below) will actually
   // be instantiated but existence (and well-formedness) of all callbacks is
   // checked.
-  static constexpr bool WantToFold() {
-    if constexpr ((kHasVirtualDestructorAtBase ||
-                   kBothTypesAreTriviallyDestructible ||
-                   kHasCustomFinalizerDispatchAtBase) &&
-                  !kWantsDetailedObjectNames) {
-      GCInfoTrait<T>::CheckCallbacksAreDefined();
+  static constexpr bool kCheckTypeGuardAlwaysTrue =
+      GCInfoTrait<T>::CheckCallbacksAreDefined() &&
       GCInfoTrait<ParentMostGarbageCollectedType>::CheckCallbacksAreDefined();
-      return true;
-    }
-    return false;
-  }
 
   // Folding would regress name resolution when deriving names from C++
   // class names as it would just folds a name to the base class name.
   using ResultType =
-      std::conditional_t<WantToFold(), ParentMostGarbageCollectedType, T>;
+      std::conditional_t<kCheckTypeGuardAlwaysTrue &&
+                             (kHasVirtualDestructorAtBase ||
+                              kBothTypesAreTriviallyDestructible ||
+                              kHasCustomFinalizerDispatchAtBase) &&
+                             !kWantsDetailedObjectNames,
+                         ParentMostGarbageCollectedType, T>;
 };
 
 }  // namespace internal
