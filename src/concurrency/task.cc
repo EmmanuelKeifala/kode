@@ -13,7 +13,7 @@
 // Simple logging helpers for structured, less noisy output
 namespace {
     enum class LogLevel { Error = 0, Info = 1, Debug = 2 };
-    static LogLevel g_log_level = LogLevel::Info;  // default: Info
+    static LogLevel g_log_level = LogLevel::Error;  // default: Error (quiet mode)
     static std::mutex g_log_mutex;
     static bool g_log_level_inited = false;
     
@@ -670,12 +670,8 @@ ConcurrencyRuntime::ConcurrencyRuntime() = default;
 ConcurrencyRuntime::~ConcurrencyRuntime() = default;
 
 bool ConcurrencyRuntime::initialize(size_t num_workers) {
-    std::cout << "[ConcurrencyRuntime] Initializing..." << std::endl;
-    
     scheduler_ = std::make_unique<TaskScheduler>(num_workers);
     scheduler_->start();
-    
-    std::cout << "[ConcurrencyRuntime] Ready with " << scheduler_->get_worker_count() << " workers" << std::endl;
     return true;
 }
 
@@ -685,7 +681,6 @@ void ConcurrencyRuntime::shutdown() {
         scheduler_->stop();
         scheduler_.reset();
     }
-    std::cout << "[ConcurrencyRuntime] Shutdown complete" << std::endl;
 }
 
 Task::TaskId ConcurrencyRuntime::kode(Task::TaskFunction func) {

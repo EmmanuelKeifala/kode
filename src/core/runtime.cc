@@ -37,9 +37,13 @@ bool KodeRuntime::Initialize() {
             return false;
         }
         
-        // Initialize V8 engine if available
+        // Initialize V8 engine if available and not disabled
+        bool v8_disabled = false;
+        if (const char* env = std::getenv("KODE_USE_V8")) {
+            if (std::string(env) == "0") v8_disabled = true;
+        }
         std::string v8err;
-        if (kode::v8embed::available()) {
+        if (!v8_disabled && kode::v8embed::available()) {
             if (!kode::v8embed::initialize(&v8err)) {
                 std::cerr << "V8 init failed: " << v8err << std::endl;
             }

@@ -30,8 +30,15 @@ bool available() { return true; }
 
 bool initialize(std::string* error_out) {
     if (g_isolate) return true;
-    v8::V8::InitializeICUDefaultLocation(nullptr);
-    v8::V8::InitializeExternalStartupData(nullptr);
+    
+    // Initialize ICU for internationalization support
+    // Pass the path to the directory containing icudtl.dat
+    v8::V8::InitializeICUDefaultLocation("./bin");
+    
+    // Note: We built V8 with v8_use_external_startup_data=false, 
+    // so we don't need to call InitializeExternalStartupData
+    
+    // Create and initialize the platform
     g_platform = v8::platform::NewDefaultPlatform();
     v8::V8::InitializePlatform(g_platform.get());
     v8::V8::Initialize();
