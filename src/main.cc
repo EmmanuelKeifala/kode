@@ -102,7 +102,6 @@ int main(int argc, char* argv[]) {
     // Run event loop if we have async operations
     // This is crucial - without this, setTimeout and other async operations won't work
     if (hasAsyncOperations) {
-        std::cout << "\n=== Running Event Loop (this is what keeps Node.js alive) ===" << std::endl;
         runtime.RunEventLoop();
     }
     

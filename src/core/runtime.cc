@@ -23,10 +23,6 @@ void KodeRuntime::setupBuiltins() {
 }
 
 bool KodeRuntime::Initialize() {
-        std::cout << "=== Kode JavaScript Runtime ===" << std::endl;
-        std::cout << "Next-generation Node.js with Go-style concurrency" << std::endl;
-        std::cout << std::endl;
-        
         // Initialize file system modules
         KodeFS::Initialize(loop);      // Legacy FS
         ModernFS::Initialize(loop);    // Modern FS
@@ -64,7 +60,6 @@ void KodeRuntime::Shutdown() {
         if (loop) {
             uv_loop_close(loop);
         }
-        std::cout << "Kode Runtime shutdown complete." << std::endl;
 }
 
 // Timer callback function - called when setTimeout timer expires
@@ -122,10 +117,8 @@ bool KodeRuntime::ExecuteString(const std::string& source, const std::string& fi
         // Fallback to simple parser pipeline
         std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
         if (statements.empty()) {
-            std::cout << "[Runtime] No executable statements found" << std::endl;
             return true;
         }
-        std::cout << "[Runtime] Executing " << statements.size() << " statement(s) from " << filename << std::endl;
         bool success = true;
         for (const auto& stmt : statements) {
             if (!ExecuteStatement(stmt)) success = false;
@@ -241,13 +234,12 @@ bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
                 return true;
                 
             case KodeParser::Statement::REQUIRE:
-                std::cout << "[Runtime] Loading module: " << stmt.content << std::endl;
+                // std::cout << "[Runtime] Loading module: " << stmt.content << std::endl;
                 return true;
                 
             case KodeParser::Statement::CONST_DECLARATION:
             case KodeParser::Statement::LET_DECLARATION:
             case KodeParser::Statement::VAR_DECLARATION:
-                std::cout << "[Runtime] Variable: " << stmt.content << std::endl;
                 return true;
                 
             default:
@@ -279,10 +271,8 @@ bool KodeRuntime::ExecuteFile(const std::string& filename) {
 
 // Run the event loop - this is what keeps Node.js alive
 void KodeRuntime::RunEventLoop() {
-    std::cout << "Starting event loop..." << std::endl;
     // UV_RUN_DEFAULT means run until there are no more active handles
-        uv_run(loop, UV_RUN_DEFAULT);
-    std::cout << "Event loop finished." << std::endl;
+    uv_run(loop, UV_RUN_DEFAULT);
 }
 
 // Go-style concurrency methods
@@ -292,10 +282,8 @@ Task::TaskId KodeRuntime::spawnTask(const std::string& js_code) {
     }
     
     return concurrency_runtime->kode([js_code, this]() {
-        std::cout << "[ConcurrentTask] Executing: " << js_code << std::endl;
         // Execute the JavaScript code using our parser
         ExecuteString(js_code, "concurrent-task");
-        std::cout << "[ConcurrentTask] Completed: " << js_code << std::endl;
     });
 }
 
