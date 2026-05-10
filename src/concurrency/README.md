@@ -9,7 +9,7 @@ The runtime is designed for both direct C++ use and JS integration via the Kode 
 - **Fibers (user-space tasks)**: Implemented with `ucontext`, each `Task` has its own stack. `swapcontext` is used to switch between the scheduler and tasks.
 - **M:N scheduler**: A small number of OS threads (workers) run many tasks. Per-worker local queues with a global queue for balancing.
 - **Work stealing**: Idle workers steal from others using a fast, low-contention strategy.
-- **Cooperative preemption**: A timer requests preemption; tasks must hit safepoints (e.g., `yield()`, channel ops, I/O) to reschedule.
+- **Cooperative rescheduling**: A timer can request rescheduling, but tasks must hit safepoints (e.g., `yield()`, channel ops, I/O) before another task runs.
 - **Channels**: CSP-style channels (`Channel<T>`) support buffered and unbuffered communication.
 - **Clean shutdown**: Managed preemption thread and worker threads with safe shutdown.
 
@@ -45,7 +45,7 @@ Use `ConcurrencyRuntime::make_channel<T>(...)` to create channels for tasks sche
   - `void cancel_task(Task::TaskId id)`: request cancellation.
   - `void start()`, `void stop()`: start/stop worker threads.
   - `void wait_all()`: block until all active tasks complete.
-  - `void set_preemptive(bool enabled)`: enable/disable preemption requests.
+- `void set_preemptive(bool enabled)`: enable/disable rescheduling requests.
   - `void set_time_slice(std::chrono::milliseconds slice)`: configure preemption request interval.
 
 ### ConcurrencyRuntime (high-level C++ API)
@@ -210,6 +210,7 @@ KODE_LOG_LEVEL=debug ./bin/concurrency_test
 ## Operational Guidance
 
 - **Safepoints**: Insert `yield()` in long-running loops or use channel/FS operations to provide natural safepoints.
+- **Cancellation**: `with_timeout` requests cancellation; blocking work that does not observe cancellation may still run to completion.
 - **Timeouts**: Use `with_timeout` (C++) or `withTimeout` (JS) to bound task execution lifetimes.
 - **Shutdown**: Always drain work (`join_all`) before `shutdown`.
 - **Capacity Planning**: Tune worker count in `initialize(num_workers)` and the time slice via `set_time_slice(...)` if needed.

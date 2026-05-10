@@ -6,7 +6,7 @@ namespace {
 struct WriteReq {
     uv_write_t req;
     uv_buf_t buf;
-    HttpServer::Connection* conn;
+    uv_tcp_t* client;
 };
 }
 
@@ -147,7 +147,7 @@ void HttpServer::handle_request(Connection* conn) {
 
     // Prepare write request
     auto* wr = new WriteReq();
-    wr->conn = conn;
+    wr->client = &conn->client;
     // Keep response storage alive until write completes by copying to heap
     char* heapBuf = new char[response.size()];
     std::memcpy(heapBuf, response.data(), response.size());
@@ -161,7 +161,7 @@ void HttpServer::after_write_cb(uv_write_t* req, int /*status*/) {
     // Free write buffer
     delete[] wr->buf.base;
     // Close client
-    uv_close(reinterpret_cast<uv_handle_t*>(&wr->conn->client), HttpServer::on_client_closed);
+    uv_close(reinterpret_cast<uv_handle_t*>(wr->client), HttpServer::on_client_closed);
     delete wr;
 }
 

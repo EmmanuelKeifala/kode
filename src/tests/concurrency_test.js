@@ -31,8 +31,8 @@ kode("console.log('After yield')");
 console.log("\n4. Testing timeout functionality:");
 withTimeout(100, "console.log('This should complete within 100ms')");
 
-// Test 5: Heavy Computation (for preemption testing)
-console.log("\n5. Testing preemptive scheduling (simplified demonstration):");
+// Test 5: Heavy Computation (for cooperative scheduling demonstration)
+console.log("\n5. Testing cooperative scheduling (simplified demonstration):");
 kode("console.log('Heavy task 1 simulated')");
 kode("console.log('Heavy task 2 simulated')");
 kode("console.log('Light task executed between heavy tasks')");

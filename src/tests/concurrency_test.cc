@@ -64,7 +64,7 @@ void test_channel_communication() {
 }
 
 void test_preemptive_scheduling() {
-    std::cout << "\n=== Test 3: Preemptive Scheduling ===" << std::endl;
+    std::cout << "\n=== Test 3: Cooperative Scheduling Behavior ===" << std::endl;
     
     ConcurrencyRuntime runtime;
     runtime.initialize(1);  // Single worker to test preemption
@@ -91,7 +91,7 @@ void test_preemptive_scheduling() {
         heavy_task_running.store(false);
     });
     
-    // Light task that should be able to run due to preemption
+    // Light task may only run after the heavy task unless the heavy task yields.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));  // Let heavy task start
     
     runtime.kode([&light_task_executed]() {
@@ -102,9 +102,9 @@ void test_preemptive_scheduling() {
     runtime.join_all();
     
     if (light_task_executed.load()) {
-        std::cout << "OK: Preemptive scheduling working - light task executed" << std::endl;
+        std::cout << "OK: Light task executed once the worker became available" << std::endl;
     } else {
-        std::cout << "FAIL: Preemptive scheduling issue - light task did not execute" << std::endl;
+        std::cout << "FAIL: Light task did not execute" << std::endl;
     }
     
     runtime.shutdown();
@@ -129,7 +129,7 @@ void test_timeout_functionality() {
     std::cout << "[Timeout] Testing task that times out..." << std::endl;
     runtime.with_timeout(std::chrono::milliseconds(100), []() {
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
-        std::cout << "[SlowTask] This should not print (timed out)" << std::endl;
+        std::cout << "[SlowTask] Work continued after cancellation request" << std::endl;
     });
     
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -201,7 +201,7 @@ void test_performance_benchmark() {
 
 int main() {
     std::cout << "=== Kode Concurrency System Tests ===" << std::endl;
-    std::cout << "Testing Go-style goroutines, channels, and preemptive scheduling" << std::endl;
+    std::cout << "Testing Go-style goroutines, channels, and cooperative scheduling" << std::endl;
     
     try {
         test_basic_task_creation();
@@ -214,7 +214,7 @@ int main() {
         std::cout << "\n=== All Tests Completed ===" << std::endl;
         std::cout << "OK: Basic task creation and execution" << std::endl;
         std::cout << "OK: Channel-based communication (CSP)" << std::endl;
-        std::cout << "OK: Preemptive scheduling" << std::endl;
+        std::cout << "OK: Cooperative scheduling" << std::endl;
         std::cout << "OK: Timeout and cancellation" << std::endl;
         std::cout << "OK: Context switching and yielding" << std::endl;
         std::cout << "OK: Performance benchmarking" << std::endl;

@@ -134,7 +134,14 @@ bool KodeRuntime::ExecuteStatement(const KodeParser::Statement& stmt) {
                 return true;
                 
             case KodeParser::Statement::SET_TIMEOUT:
-                setTimeout("Timeout callback executed!", 1000);
+                {
+                    int delay_ms = 1000;
+                    auto it = stmt.options.find("delay");
+                    if (it != stmt.options.end()) {
+                        try { delay_ms = std::stoi(it->second); } catch (...) { delay_ms = 1000; }
+                    }
+                    setTimeout("Timeout callback executed!", delay_ms);
+                }
                 return true;
                 
             case KodeParser::Statement::FS_READ_FILE:

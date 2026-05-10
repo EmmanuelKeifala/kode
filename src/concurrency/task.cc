@@ -725,7 +725,7 @@ void ConcurrencyRuntime::with_timeout(std::chrono::milliseconds timeout, Task::T
             if (current_time - start_time > timeout) {
                 timed_out->store(true);
                 scheduler_->cancel_task(main_task);
-                std::cout << "[Timeout] Task " << main_task << " timed out after " 
+                std::cout << "[Timeout] Cancellation requested for task " << main_task << " after "
                          << timeout.count() << "ms" << std::endl;
                 break;
             }

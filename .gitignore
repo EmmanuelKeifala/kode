@@ -5,3 +5,5 @@ v8/*
 libuv/*
 !libuv/uv
 !libuv/uv.h
+
+*.md
