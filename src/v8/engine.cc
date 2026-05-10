@@ -118,6 +118,25 @@ bool GetStringOption(v8::Isolate* isolate,
     return true;
 }
 
+bool GetSignalReasonIfAborted(v8::Isolate* isolate,
+                              v8::Local<v8::Context> context,
+                              v8::Local<v8::Value> options,
+                              v8::Local<v8::Value>* reason_out) {
+    if (options.IsEmpty() || !options->IsObject()) return false;
+    v8::Local<v8::Object> object = options.As<v8::Object>();
+    v8::Local<v8::Value> signal_value;
+    if (!object->Get(context, V8String(isolate, "signal")).ToLocal(&signal_value) || !signal_value->IsObject()) return false;
+    v8::Local<v8::Object> signal = signal_value.As<v8::Object>();
+    v8::Local<v8::Value> aborted_value;
+    if (!signal->Get(context, V8String(isolate, "aborted")).ToLocal(&aborted_value) || !aborted_value->BooleanValue(isolate)) return false;
+    v8::Local<v8::Value> reason;
+    if (!signal->Get(context, V8String(isolate, "reason")).ToLocal(&reason) || reason->IsUndefined()) {
+        reason = CreateKodeError(isolate, context, "ECANCELED", "Operation cancelled", "Kode.timeout", "");
+    }
+    *reason_out = reason;
+    return true;
+}
+
 // Console.log implementation
 void ConsoleLogCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
@@ -253,6 +272,13 @@ void FSReadCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     std::string path(*filename, filename.length());
     v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
 
+    v8::Local<v8::Value> cancelReason;
+    if (args.Length() >= 2 && GetSignalReasonIfAborted(isolate, context, args[1], &cancelReason)) {
+        RejectPromise(context, resolver, cancelReason);
+        args.GetReturnValue().Set(resolver->GetPromise());
+        return;
+    }
+
     auto* req = new PromiseReq();
     req->isolate = isolate;
     req->operation = "fs.read";
@@ -317,6 +343,13 @@ void FSWriteCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     std::string data(*dataValue, dataValue.length());
     bool createParents = create == "parents";
     v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+
+    v8::Local<v8::Value> cancelReason;
+    if (args.Length() >= 3 && GetSignalReasonIfAborted(isolate, context, args[2], &cancelReason)) {
+        RejectPromise(context, resolver, cancelReason);
+        args.GetReturnValue().Set(resolver->GetPromise());
+        return;
+    }
 
     auto* req = new PromiseReq();
     req->isolate = isolate;
@@ -498,6 +531,34 @@ bool InstallKodeRuntimeBootstrap(v8::Isolate* isolate, v8::Local<v8::Context> co
 
     activeOperations() {
       return { scopes: activeScopes, tasks: activeTasks };
+    },
+
+    timeout(ms) {
+      if (typeof ms !== "number" || ms < 0) {
+        throw runtimeError("EINVAL", "Kode.timeout requires a non-negative number", "Kode.timeout");
+      }
+
+      const signal = {
+        aborted: false,
+        reason: undefined,
+        onabort: undefined,
+      };
+
+      function abort() {
+        if (signal.aborted) return;
+        signal.aborted = true;
+        signal.reason = runtimeError("ECANCELED", "Operation cancelled", "Kode.timeout");
+        if (typeof signal.onabort === "function") signal.onabort(signal.reason);
+      }
+
+      if (ms === 0) abort();
+
+      return {
+        signal,
+        cancel() {
+          abort();
+        },
+      };
     },
   };
 })(globalThis);

@@ -65,6 +65,9 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/kode_fs_native_write_no_parents.js)"; case "$$output" in *"write-no-parents ENOENT fs.write tmp/kode-native/missing-parent/file.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_native_write_parents.js)"; case "$$output" in *"write-parents 5 file hello"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_native_info.js)"; case "$$output" in *"info file text/markdown true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_timeout_basic.js)"; case "$$output" in *"timeout-before false true"*"timeout-after true ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_read_cancelled.js)"; case "$$output" in *"read-cancelled ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_write_cancelled.js)"; case "$$output" in *"write-cancelled ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:
