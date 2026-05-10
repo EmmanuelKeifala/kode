@@ -1,4 +1,5 @@
 bin/
+.worktrees/
 v8/*
 !v8/include
 
