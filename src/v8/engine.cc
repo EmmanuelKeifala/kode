@@ -21,6 +21,7 @@ std::string runScript(const std::string& /*code*/, std::string* error_out) {
 #include <memory>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include "../filesystem/modern_fs.h"
 
 namespace kode { namespace v8embed {
@@ -30,12 +31,57 @@ static v8::Isolate* g_isolate = nullptr;
 static v8::ArrayBuffer::Allocator* g_allocator = nullptr;
 static v8::Global<v8::Context> g_context;
 
+v8::Local<v8::String> V8String(v8::Isolate* isolate, const char* value) {
+    return v8::String::NewFromUtf8(isolate, value).ToLocalChecked();
+}
+
+v8::Local<v8::String> V8String(v8::Isolate* isolate, const std::string& value) {
+    return v8::String::NewFromUtf8(isolate, value.c_str()).ToLocalChecked();
+}
+
 // Helper struct for async callbacks
 struct AsyncReq {
     v8::Global<v8::Function> callback;
     v8::Global<v8::Context> context;
     v8::Isolate* isolate;
 };
+
+struct PromiseReq {
+    v8::Global<v8::Promise::Resolver> resolver;
+    v8::Global<v8::Context> context;
+    v8::Isolate* isolate;
+    std::string operation;
+    std::string path;
+};
+
+v8::Local<v8::Promise::Resolver> NewResolver(v8::Isolate* isolate, v8::Local<v8::Context> context) {
+    return v8::Promise::Resolver::New(context).ToLocalChecked();
+}
+
+void ResolvePromise(v8::Local<v8::Context> context,
+                    v8::Local<v8::Promise::Resolver> resolver,
+                    v8::Local<v8::Value> value) {
+    resolver->Resolve(context, value).FromMaybe(false);
+}
+
+void RejectPromise(v8::Local<v8::Context> context,
+                   v8::Local<v8::Promise::Resolver> resolver,
+                   v8::Local<v8::Value> value) {
+    resolver->Reject(context, value).FromMaybe(false);
+}
+
+v8::Local<v8::Object> CreateKodeError(v8::Isolate* isolate,
+                                      v8::Local<v8::Context> context,
+                                      const std::string& code,
+                                      const std::string& message,
+                                      const std::string& operation,
+                                      const std::string& path) {
+    v8::Local<v8::Object> error = v8::Exception::Error(V8String(isolate, message)).As<v8::Object>();
+    error->Set(context, V8String(isolate, "code"), V8String(isolate, code)).FromMaybe(false);
+    error->Set(context, V8String(isolate, "operation"), V8String(isolate, operation)).FromMaybe(false);
+    error->Set(context, V8String(isolate, "path"), V8String(isolate, path)).FromMaybe(false);
+    return error;
+}
 
 // Console.log implementation
 void ConsoleLogCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -99,6 +145,52 @@ void FSReadFileCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     });
 }
 
+void FSReadTextCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+    if (args.Length() < 1 || !args[0]->IsString()) {
+        isolate->ThrowException(V8String(isolate, "readText requires a path string"));
+        return;
+    }
+
+    v8::String::Utf8Value filename(isolate, args[0]);
+    std::string path(*filename, filename.length());
+    v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+
+    auto* req = new PromiseReq();
+    req->isolate = isolate;
+    req->operation = "fs.readText";
+    req->path = path;
+    req->resolver.Reset(isolate, resolver);
+    req->context.Reset(isolate, context);
+
+    ModernFS::readFile(path, [req](const ModernFS::ReadResult& result) {
+        v8::Isolate* isolate = req->isolate;
+        v8::Locker locker(isolate);
+        v8::Isolate::Scope isolate_scope(isolate);
+        v8::HandleScope handle_scope(isolate);
+        v8::Local<v8::Context> context = v8::Local<v8::Context>::New(isolate, req->context);
+        v8::Context::Scope context_scope(context);
+        v8::Local<v8::Promise::Resolver> resolver = v8::Local<v8::Promise::Resolver>::New(isolate, req->resolver);
+
+        if (result.success) {
+            ResolvePromise(context, resolver, V8String(isolate, result.content));
+        } else {
+            v8::Local<v8::Object> error = CreateKodeError(isolate, context, "ENOENT", result.error, req->operation, req->path);
+            RejectPromise(context, resolver, error);
+        }
+
+        isolate->PerformMicrotaskCheckpoint();
+        req->resolver.Reset();
+        req->context.Reset();
+        delete req;
+    });
+
+    args.GetReturnValue().Set(resolver->GetPromise());
+}
+
 // require implementation
 void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
@@ -106,15 +198,106 @@ void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::String::Utf8Value str(isolate, args[0]);
     std::string moduleName(*str);
     
-    if (moduleName == "fs") {
+    if (moduleName == "fs" || moduleName == "kode:fs") {
         v8::Local<v8::Object> fs = v8::Object::New(isolate);
-        fs->Set(isolate->GetCurrentContext(), 
-            v8::String::NewFromUtf8(isolate, "readFile").ToLocalChecked(),
-            v8::Function::New(isolate->GetCurrentContext(), FSReadFileCallback).ToLocalChecked());
+        if (!fs->Set(isolate->GetCurrentContext(),
+                v8::String::NewFromUtf8(isolate, "readFile").ToLocalChecked(),
+                v8::Function::New(isolate->GetCurrentContext(), FSReadFileCallback).ToLocalChecked()).FromMaybe(false)) {
+            isolate->ThrowException(v8::String::NewFromUtf8(isolate, "Failed to initialize fs module").ToLocalChecked());
+            return;
+        }
+        if (!fs->Set(isolate->GetCurrentContext(),
+                V8String(isolate, "readText"),
+                v8::Function::New(isolate->GetCurrentContext(), FSReadTextCallback).ToLocalChecked()).FromMaybe(false)) {
+            isolate->ThrowException(V8String(isolate, "Failed to initialize fs.readText"));
+            return;
+        }
         args.GetReturnValue().Set(fs);
     } else {
          isolate->ThrowException(v8::String::NewFromUtf8(isolate, ("Cannot find module '" + moduleName + "'").c_str()).ToLocalChecked());
     }
+}
+
+bool InstallKodeRuntimeBootstrap(v8::Isolate* isolate, v8::Local<v8::Context> context, std::string* error_out) {
+    v8::Context::Scope context_scope(context);
+    const char* source_code = R"JS(
+(function(globalThis) {
+  let activeScopes = 0;
+  let activeTasks = 0;
+
+  function runtimeError(code, message, operation) {
+    const err = new Error(message);
+    err.code = code;
+    err.operation = operation;
+    return err;
+  }
+
+  globalThis.Kode = {
+    scope(fn) {
+      if (typeof fn !== "function") {
+        throw runtimeError("EINVAL", "Kode.scope requires a function", "Kode.scope");
+      }
+
+      activeScopes++;
+      const state = { failed: false };
+      const scope = {
+        async(taskFn) {
+          if (typeof taskFn !== "function") {
+            throw runtimeError("EINVAL", "scope.async requires a function", "scope.async");
+          }
+
+          if (state.failed) {
+            return Promise.reject(runtimeError("ECANCELED", "Scope already failed", "scope.async"));
+          }
+
+          activeTasks++;
+          return Promise.resolve()
+            .then(taskFn)
+            .catch((err) => {
+              state.failed = true;
+              throw err;
+            })
+            .finally(() => {
+              activeTasks--;
+            });
+        },
+      };
+
+      return Promise.resolve()
+        .then(() => fn(scope))
+        .finally(() => {
+          activeScopes--;
+        });
+    },
+
+    activeOperations() {
+      return { scopes: activeScopes, tasks: activeTasks };
+    },
+  };
+})(globalThis);
+)JS";
+
+    v8::TryCatch try_catch(isolate);
+    v8::Local<v8::String> source = V8String(isolate, source_code);
+    v8::Local<v8::Script> script;
+    if (!v8::Script::Compile(context, source).ToLocal(&script)) {
+        if (error_out) {
+            v8::String::Utf8Value err(isolate, try_catch.Exception());
+            *error_out = err.length() ? *err : "Failed to compile Kode bootstrap";
+        }
+        return false;
+    }
+
+    v8::Local<v8::Value> result;
+    if (!script->Run(context).ToLocal(&result)) {
+        if (error_out) {
+            v8::String::Utf8Value err(isolate, try_catch.Exception());
+            *error_out = err.length() ? *err : "Failed to run Kode bootstrap";
+        }
+        return false;
+    }
+
+    return true;
 }
 
 bool available() { return true; }
@@ -136,6 +319,7 @@ bool initialize(std::string* error_out) {
         if (error_out) *error_out = "Failed to create V8 Isolate";
         return false;
     }
+    g_isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
 
     // Create a persistent context
     v8::Isolate::Scope isolate_scope(g_isolate);
@@ -144,17 +328,22 @@ bool initialize(std::string* error_out) {
     // Create global template
     v8::Local<v8::ObjectTemplate> global = v8::ObjectTemplate::New(g_isolate);
     
-    // Bind console.log
-    v8::Local<v8::ObjectTemplate> console = v8::ObjectTemplate::New(g_isolate);
-    console->Set(v8::String::NewFromUtf8(g_isolate, "log").ToLocalChecked(),
-                 v8::FunctionTemplate::New(g_isolate, ConsoleLogCallback));
-    global->Set(v8::String::NewFromUtf8(g_isolate, "console").ToLocalChecked(), console);
-    
     // Bind require
     global->Set(v8::String::NewFromUtf8(g_isolate, "require").ToLocalChecked(),
                 v8::FunctionTemplate::New(g_isolate, RequireCallback));
 
     v8::Local<v8::Context> context = v8::Context::New(g_isolate, nullptr, global);
+    v8::Context::Scope context_scope(context);
+
+    v8::Local<v8::Object> console = v8::Object::New(g_isolate);
+    console->Set(context,
+                 V8String(g_isolate, "log"),
+                 v8::Function::New(context, ConsoleLogCallback).ToLocalChecked()).FromMaybe(false);
+    context->Global()->Set(context, V8String(g_isolate, "console"), console).FromMaybe(false);
+
+    if (!InstallKodeRuntimeBootstrap(g_isolate, context, error_out)) {
+        return false;
+    }
     g_context.Reset(g_isolate, context);
     
     return true;
@@ -214,6 +403,8 @@ std::string runScript(const std::string& code, std::string* error_out) {
         }
         return std::string();
     }
+
+    g_isolate->PerformMicrotaskCheckpoint();
 
     v8::String::Utf8Value utf8(g_isolate, result);
     if (*utf8) return std::string(*utf8, utf8.length());

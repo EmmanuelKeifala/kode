@@ -28,8 +28,6 @@ int main(int argc, char* argv[]) {
     }
     
     bool success = true;
-    bool hasAsyncOperations = false;  // Track if we need to run event loop
-    
     if (argc == 1) {
         // No arguments - show demo mode
         PrintUsage(argv[0]);
@@ -43,7 +41,6 @@ int main(int argc, char* argv[]) {
         
         std::cout << "\n2. Asynchronous operations (setTimeout):" << std::endl;
         runtime.ExecuteString("setTimeout()");
-        hasAsyncOperations = true;
         
         std::cout << "\n3. File system operations:" << std::endl;
         std::cout << "   a) Synchronous file read (blocks):" << std::endl;
@@ -51,11 +48,9 @@ int main(int argc, char* argv[]) {
         
         std::cout << "\n   b) Asynchronous file read (non-blocking):" << std::endl;
         runtime.ExecuteString("fs.readFile()");
-        hasAsyncOperations = true;
         
         std::cout << "\n   c) Asynchronous file write:" << std::endl;
         runtime.ExecuteString("fs.writeFile()");
-        hasAsyncOperations = true;
         
     } else {
         // Process command line arguments
@@ -77,18 +72,10 @@ int main(int argc, char* argv[]) {
                 std::string code = argv[++i];
                 success = runtime.ExecuteString(code, "command-line");
                 
-                // Check if we need to run event loop for async operations
-                if (code.find("setTimeout") != std::string::npos || 
-                    code.find("fs.readFile") != std::string::npos || 
-                    code.find("fs.writeFile") != std::string::npos) {
-                    hasAsyncOperations = true;
-                }
             } 
             else if (arg[0] != '-') {
                 // Execute a JavaScript file
                 success = runtime.ExecuteFile(arg);
-                // Files might contain async operations, so run event loop
-                hasAsyncOperations = true;
             } 
             else {
                 std::cerr << "Unknown option: " << arg << std::endl;
@@ -99,11 +86,9 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Run event loop if we have async operations
-    // This is crucial - without this, setTimeout and other async operations won't work
-    if (hasAsyncOperations) {
-        runtime.RunEventLoop();
-    }
+    // Drain the event loop after execution. uv_run returns immediately when no
+    // handles or requests are active, and this keeps host promises reliable.
+    runtime.RunEventLoop();
     
     // Clean shutdown
     runtime.Shutdown();

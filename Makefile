@@ -14,7 +14,7 @@ define APP
 endef
  
 define OBJ
-	v8/libv8_monolith.a
+	v8/libv8_monolith.a \
 	libuv/libuv.a
 endef
 
@@ -34,7 +34,7 @@ examples=\
 
 build:
 	mkdir -p bin
-	ccache g++ $(APP) -I $(INCLUDE) -I $(INCLUDEUV) -std=c++20 -pthread -o $(OUTPUT_FILE) -DKODE_WITH_V8 $(OBJ) -Wl,--no-as-needed -ldl
+	ccache g++ $(APP) -I $(INCLUDE) -I $(INCLUDEUV) -std=c++20 -pthread -o $(OUTPUT_FILE) -DKODE_WITH_V8 -DV8_COMPRESS_POINTERS $(OBJ) -Wl,--no-as-needed -ldl
 
 test-concurrency:
 	mkdir -p bin
@@ -48,6 +48,18 @@ test-simple:
 test-http:
 	mkdir -p bin
 	ccache g++ src/tests/http/server_smoke.cc src/http/http_server.cc -I $(INCLUDEUV) -std=c++20 -pthread -o bin/http_test libuv/libuv.a -Wl,--no-as-needed -ldl
+
+test-v8-microtask:
+	mkdir -p bin
+	ccache g++ src/tests/v8_microtask_test.cc -I $(INCLUDE) -std=c++20 -pthread -o bin/v8_microtask_test -DV8_COMPRESS_POINTERS v8/libv8_monolith.a -Wl,--no-as-needed -ldl
+	./bin/v8_microtask_test
+
+test-structured-runtime: build
+	output="$$(./bin/kode tests/structured_scope_success.js)"; case "$$output" in *"alpha beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/structured_scope_failure.js)"; case "$$output" in *"caught boom"*"cancelled ECANCELED scope.async"*) case "$$output" in *"should-not-run"*) printf '%s\n' "$$output"; exit 1;; *) ;; esac ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_read_text_success.js)"; case "$$output" in *"Kode Runtime"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_read_text_missing.js)"; case "$$output" in *"ENOENT fs.readText tests/does-not-exist.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/structured_scope_diagnostics.js)"; case "$$output" in *"during true"*"done"*"after 0 0 0"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:
