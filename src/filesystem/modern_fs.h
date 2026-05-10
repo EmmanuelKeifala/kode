@@ -20,6 +20,8 @@ class KodeRuntime;
 
 class ModernFS {
 public:
+    enum class Operation { Read, Write, Info };
+
     // File metadata structure - like Node.js fs.Stats but cleaner
     struct FileInfo {
         std::string path;
@@ -68,6 +70,7 @@ public:
     // Write file with automatic directory creation
     static void writeFile(const std::string& path, const std::string& content, WriteCallback callback);
     static void writeFile(const std::string& path, const std::string& content, const std::string& encoding, WriteCallback callback);
+    static void writeFile(const std::string& path, const std::string& content, const std::string& encoding, bool createParents, WriteCallback callback);
     
     // Get file information (replaces fs.stat)
     static void getFileInfo(const std::string& path, InfoCallback callback);
@@ -96,9 +99,11 @@ private:
     // Internal async operation structure
     struct AsyncOperation {
         uv_work_t request;
+        Operation operation;
         std::string path;
         std::string content;
         std::string encoding;
+        bool createParents;
         ReadCallback readCallback;
         WriteCallback writeCallback;
         InfoCallback infoCallback;

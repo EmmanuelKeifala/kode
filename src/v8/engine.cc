@@ -83,6 +83,41 @@ v8::Local<v8::Object> CreateKodeError(v8::Isolate* isolate,
     return error;
 }
 
+std::string FileKind(const ModernFS::FileInfo& info) {
+    if (info.isFile) return "file";
+    if (info.isDirectory) return "directory";
+    return "other";
+}
+
+v8::Local<v8::Value> CreateInfoValue(v8::Isolate* isolate,
+                                     v8::Local<v8::Context> context,
+                                     const ModernFS::FileInfo& info) {
+    if (info.path.empty()) return v8::Null(isolate);
+
+    v8::Local<v8::Object> object = v8::Object::New(isolate);
+    object->Set(context, V8String(isolate, "path"), V8String(isolate, info.path)).FromMaybe(false);
+    object->Set(context, V8String(isolate, "kind"), V8String(isolate, FileKind(info))).FromMaybe(false);
+    object->Set(context, V8String(isolate, "size"), v8::Number::New(isolate, static_cast<double>(info.size))).FromMaybe(false);
+    object->Set(context, V8String(isolate, "mimeType"), V8String(isolate, info.mimeType)).FromMaybe(false);
+    object->Set(context, V8String(isolate, "lastModified"), v8::Number::New(isolate, static_cast<double>(info.lastModified))).FromMaybe(false);
+    return object;
+}
+
+bool GetStringOption(v8::Isolate* isolate,
+                     v8::Local<v8::Context> context,
+                     v8::Local<v8::Value> options,
+                     const char* name,
+                     std::string* out) {
+    if (options.IsEmpty() || !options->IsObject()) return false;
+    v8::Local<v8::Object> object = options.As<v8::Object>();
+    v8::Local<v8::Value> value;
+    if (!object->Get(context, V8String(isolate, name)).ToLocal(&value) || value->IsUndefined()) return false;
+    if (!value->IsString()) return false;
+    v8::String::Utf8Value str(isolate, value);
+    *out = std::string(*str, str.length());
+    return true;
+}
+
 // Console.log implementation
 void ConsoleLogCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
@@ -191,6 +226,179 @@ void FSReadTextCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     args.GetReturnValue().Set(resolver->GetPromise());
 }
 
+void FSReadCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+    if (args.Length() < 1 || !args[0]->IsString()) {
+        isolate->ThrowException(V8String(isolate, "fs.read requires a path string"));
+        return;
+    }
+
+    std::string as = "text";
+    if (args.Length() >= 2) {
+        if (!args[1]->IsObject()) {
+            isolate->ThrowException(V8String(isolate, "fs.read options must be an object"));
+            return;
+        }
+        GetStringOption(isolate, context, args[1], "as", &as);
+    }
+    if (as != "text") {
+        isolate->ThrowException(V8String(isolate, "fs.read only supports { as: \"text\" }"));
+        return;
+    }
+
+    v8::String::Utf8Value filename(isolate, args[0]);
+    std::string path(*filename, filename.length());
+    v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+
+    auto* req = new PromiseReq();
+    req->isolate = isolate;
+    req->operation = "fs.read";
+    req->path = path;
+    req->resolver.Reset(isolate, resolver);
+    req->context.Reset(isolate, context);
+
+    ModernFS::readFile(path, [req](const ModernFS::ReadResult& result) {
+        v8::Isolate* isolate = req->isolate;
+        v8::Locker locker(isolate);
+        v8::Isolate::Scope isolate_scope(isolate);
+        v8::HandleScope handle_scope(isolate);
+        v8::Local<v8::Context> context = v8::Local<v8::Context>::New(isolate, req->context);
+        v8::Context::Scope context_scope(context);
+        v8::Local<v8::Promise::Resolver> resolver = v8::Local<v8::Promise::Resolver>::New(isolate, req->resolver);
+
+        if (result.success) {
+            v8::Local<v8::Object> file = v8::Object::New(isolate);
+            file->Set(context, V8String(isolate, "text"), V8String(isolate, result.content)).FromMaybe(false);
+            file->Set(context, V8String(isolate, "info"), CreateInfoValue(isolate, context, result.info)).FromMaybe(false);
+            ResolvePromise(context, resolver, file);
+        } else {
+            v8::Local<v8::Object> error = CreateKodeError(isolate, context, "ENOENT", result.error, req->operation, req->path);
+            RejectPromise(context, resolver, error);
+        }
+
+        isolate->PerformMicrotaskCheckpoint();
+        req->resolver.Reset();
+        req->context.Reset();
+        delete req;
+    });
+
+    args.GetReturnValue().Set(resolver->GetPromise());
+}
+
+void FSWriteCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+    if (args.Length() < 2 || !args[0]->IsString() || !args[1]->IsString()) {
+        isolate->ThrowException(V8String(isolate, "fs.write requires path and data strings"));
+        return;
+    }
+
+    std::string create = "none";
+    if (args.Length() >= 3) {
+        if (!args[2]->IsObject()) {
+            isolate->ThrowException(V8String(isolate, "fs.write options must be an object"));
+            return;
+        }
+        GetStringOption(isolate, context, args[2], "create", &create);
+    }
+    if (create != "none" && create != "parents") {
+        isolate->ThrowException(V8String(isolate, "fs.write create must be \"none\" or \"parents\""));
+        return;
+    }
+
+    v8::String::Utf8Value filename(isolate, args[0]);
+    v8::String::Utf8Value dataValue(isolate, args[1]);
+    std::string path(*filename, filename.length());
+    std::string data(*dataValue, dataValue.length());
+    bool createParents = create == "parents";
+    v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+
+    auto* req = new PromiseReq();
+    req->isolate = isolate;
+    req->operation = "fs.write";
+    req->path = path;
+    req->resolver.Reset(isolate, resolver);
+    req->context.Reset(isolate, context);
+
+    ModernFS::writeFile(path, data, "utf8", createParents, [req](const ModernFS::WriteResult& result) {
+        v8::Isolate* isolate = req->isolate;
+        v8::Locker locker(isolate);
+        v8::Isolate::Scope isolate_scope(isolate);
+        v8::HandleScope handle_scope(isolate);
+        v8::Local<v8::Context> context = v8::Local<v8::Context>::New(isolate, req->context);
+        v8::Context::Scope context_scope(context);
+        v8::Local<v8::Promise::Resolver> resolver = v8::Local<v8::Promise::Resolver>::New(isolate, req->resolver);
+
+        if (result.success) {
+            v8::Local<v8::Object> value = v8::Object::New(isolate);
+            value->Set(context, V8String(isolate, "bytesWritten"), v8::Number::New(isolate, static_cast<double>(result.bytesWritten))).FromMaybe(false);
+            value->Set(context, V8String(isolate, "info"), CreateInfoValue(isolate, context, result.info)).FromMaybe(false);
+            ResolvePromise(context, resolver, value);
+        } else {
+            v8::Local<v8::Object> error = CreateKodeError(isolate, context, "ENOENT", result.error, req->operation, req->path);
+            RejectPromise(context, resolver, error);
+        }
+
+        isolate->PerformMicrotaskCheckpoint();
+        req->resolver.Reset();
+        req->context.Reset();
+        delete req;
+    });
+
+    args.GetReturnValue().Set(resolver->GetPromise());
+}
+
+void FSInfoCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+    if (args.Length() < 1 || !args[0]->IsString()) {
+        isolate->ThrowException(V8String(isolate, "fs.info requires a path string"));
+        return;
+    }
+
+    v8::String::Utf8Value filename(isolate, args[0]);
+    std::string path(*filename, filename.length());
+    v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+
+    auto* req = new PromiseReq();
+    req->isolate = isolate;
+    req->operation = "fs.info";
+    req->path = path;
+    req->resolver.Reset(isolate, resolver);
+    req->context.Reset(isolate, context);
+
+    ModernFS::getFileInfo(path, [req](const ModernFS::FileInfo& info, const std::string& errorText) {
+        v8::Isolate* isolate = req->isolate;
+        v8::Locker locker(isolate);
+        v8::Isolate::Scope isolate_scope(isolate);
+        v8::HandleScope handle_scope(isolate);
+        v8::Local<v8::Context> context = v8::Local<v8::Context>::New(isolate, req->context);
+        v8::Context::Scope context_scope(context);
+        v8::Local<v8::Promise::Resolver> resolver = v8::Local<v8::Promise::Resolver>::New(isolate, req->resolver);
+
+        if (!errorText.empty() && info.path.empty() && errorText.rfind("File not found:", 0) != 0) {
+            v8::Local<v8::Object> error = CreateKodeError(isolate, context, "EIO", errorText, req->operation, req->path);
+            RejectPromise(context, resolver, error);
+        } else {
+            ResolvePromise(context, resolver, CreateInfoValue(isolate, context, info));
+        }
+
+        isolate->PerformMicrotaskCheckpoint();
+        req->resolver.Reset();
+        req->context.Reset();
+        delete req;
+    });
+
+    args.GetReturnValue().Set(resolver->GetPromise());
+}
+
 // require implementation
 void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
@@ -210,6 +418,24 @@ void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
                 V8String(isolate, "readText"),
                 v8::Function::New(isolate->GetCurrentContext(), FSReadTextCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(V8String(isolate, "Failed to initialize fs.readText"));
+            return;
+        }
+        if (!fs->Set(isolate->GetCurrentContext(),
+                V8String(isolate, "read"),
+                v8::Function::New(isolate->GetCurrentContext(), FSReadCallback).ToLocalChecked()).FromMaybe(false)) {
+            isolate->ThrowException(V8String(isolate, "Failed to initialize fs.read"));
+            return;
+        }
+        if (!fs->Set(isolate->GetCurrentContext(),
+                V8String(isolate, "write"),
+                v8::Function::New(isolate->GetCurrentContext(), FSWriteCallback).ToLocalChecked()).FromMaybe(false)) {
+            isolate->ThrowException(V8String(isolate, "Failed to initialize fs.write"));
+            return;
+        }
+        if (!fs->Set(isolate->GetCurrentContext(),
+                V8String(isolate, "info"),
+                v8::Function::New(isolate->GetCurrentContext(), FSInfoCallback).ToLocalChecked()).FromMaybe(false)) {
+            isolate->ThrowException(V8String(isolate, "Failed to initialize fs.info"));
             return;
         }
         args.GetReturnValue().Set(fs);

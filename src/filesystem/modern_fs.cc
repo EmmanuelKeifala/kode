@@ -23,6 +23,7 @@ void ModernFS::readFile(const std::string& path, const std::string& encoding, Re
     
     // Create async operation
     AsyncOperation* op = new AsyncOperation();
+    op->operation = Operation::Read;
     op->path = path;
     op->encoding = encoding;
     op->readCallback = callback;
@@ -46,13 +47,19 @@ void ModernFS::writeFile(const std::string& path, const std::string& content, Wr
 }
 
 void ModernFS::writeFile(const std::string& path, const std::string& content, const std::string& encoding, WriteCallback callback) {
+    writeFile(path, content, encoding, true, callback);
+}
+
+void ModernFS::writeFile(const std::string& path, const std::string& content, const std::string& encoding, bool createParents, WriteCallback callback) {
     std::cout << "[ModernFS] Writing file: " << path << " (" << content.length() << " chars)" << std::endl;
     
     // Create async operation
     AsyncOperation* op = new AsyncOperation();
+    op->operation = Operation::Write;
     op->path = path;
     op->content = content;
     op->encoding = encoding;
+    op->createParents = createParents;
     op->writeCallback = callback;
     op->request.data = op;
     
@@ -73,6 +80,7 @@ void ModernFS::getFileInfo(const std::string& path, InfoCallback callback) {
     std::cout << "[ModernFS] Getting file info: " << path << std::endl;
     
     AsyncOperation* op = new AsyncOperation();
+    op->operation = Operation::Info;
     op->path = path;
     op->infoCallback = callback;
     op->request.data = op;
@@ -98,8 +106,8 @@ void ModernFS::workCallback(uv_work_t* req) {
     AsyncOperation* op = static_cast<AsyncOperation*>(req->data);
     
     try {
-        if (op->readCallback) {
-            // Read operation
+        switch (op->operation) {
+        case Operation::Read: {
             std::ifstream file(op->path, std::ios::binary);
             if (!file.is_open()) {
                 op->readResult.success = false;
@@ -116,12 +124,12 @@ void ModernFS::workCallback(uv_work_t* req) {
             op->readResult.info = createFileInfo(op->path);
             op->readResult.encoding = op->encoding;
             op->readResult.success = true;
-            
-        } else if (op->writeCallback) {
-            // Write operation
-            
-            // Ensure directory exists
-            ensureDirectoryExists(op->path);
+            break;
+        }
+        case Operation::Write: {
+            if (op->createParents) {
+                ensureDirectoryExists(op->path);
+            }
             
             std::ofstream file(op->path);
             if (!file.is_open()) {
@@ -141,23 +149,24 @@ void ModernFS::workCallback(uv_work_t* req) {
                 op->writeResult.success = false;
                 op->writeResult.error = "Failed to write to file: " + op->path;
             }
-            
-        } else if (op->infoCallback) {
-            // Info operation
+            break;
+        }
+        case Operation::Info:
             op->fileInfo = createFileInfo(op->path);
             if (op->fileInfo.path.empty()) {
                 op->error = "File not found: " + op->path;
             }
+            break;
         }
         
     } catch (const std::exception& e) {
-        if (op->readCallback) {
+        if (op->operation == Operation::Read) {
             op->readResult.success = false;
             op->readResult.error = "Exception: " + std::string(e.what());
-        } else if (op->writeCallback) {
+        } else if (op->operation == Operation::Write) {
             op->writeResult.success = false;
             op->writeResult.error = "Exception: " + std::string(e.what());
-        } else if (op->infoCallback) {
+        } else if (op->operation == Operation::Info) {
             op->error = "Exception: " + std::string(e.what());
         }
     }
@@ -171,27 +180,27 @@ void ModernFS::afterWorkCallback(uv_work_t* req, int status) {
         // libuv error
         std::string error = "libuv error: " + std::string(uv_strerror(status));
         
-        if (op->readCallback) {
+        if (op->operation == Operation::Read) {
             ReadResult result;
             result.success = false;
             result.error = error;
             op->readCallback(result);
-        } else if (op->writeCallback) {
+        } else if (op->operation == Operation::Write) {
             WriteResult result;
             result.success = false;
             result.error = error;
             op->writeCallback(result);
-        } else if (op->infoCallback) {
+        } else if (op->operation == Operation::Info) {
             FileInfo info;
             op->infoCallback(info, error);
         }
     } else {
         // Success - call appropriate callback
-        if (op->readCallback) {
+        if (op->operation == Operation::Read) {
             op->readCallback(op->readResult);
-        } else if (op->writeCallback) {
+        } else if (op->operation == Operation::Write) {
             op->writeCallback(op->writeResult);
-        } else if (op->infoCallback) {
+        } else if (op->operation == Operation::Info) {
             op->infoCallback(op->fileInfo, op->error);
         }
     }

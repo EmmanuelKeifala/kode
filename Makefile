@@ -60,6 +60,11 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/kode_fs_read_text_success.js)"; case "$$output" in *"Kode Runtime"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_read_text_missing.js)"; case "$$output" in *"ENOENT fs.readText tests/does-not-exist.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/structured_scope_diagnostics.js)"; case "$$output" in *"during true"*"done"*"after 0 0 0"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_native_read.js)"; case "$$output" in *"read true file text/markdown"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_native_read_missing.js)"; case "$$output" in *"read-missing ENOENT fs.read tests/does-not-exist-native.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_native_write_no_parents.js)"; case "$$output" in *"write-no-parents ENOENT fs.write tmp/kode-native/missing-parent/file.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_native_write_parents.js)"; case "$$output" in *"write-parents 5 file hello"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_native_info.js)"; case "$$output" in *"info file text/markdown true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:
