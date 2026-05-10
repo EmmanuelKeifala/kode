@@ -68,6 +68,14 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/kode_timeout_basic.js)"; case "$$output" in *"timeout-before false true"*"timeout-after true ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_read_cancelled.js)"; case "$$output" in *"read-cancelled ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_write_cancelled.js)"; case "$$output" in *"write-cancelled ECANCELED Kode.timeout"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_require_exports.js)"; case "$$output" in *"module-add 5"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_module_exports.js)"; case "$$output" in *"module-reassign reassigned"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_cache.js)"; case "$$output" in *"module-cache true 1 1"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_nested.js)"; case "$$output" in *"module-nested nested"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_nested_require.js)"; case "$$output" in *"module-nested-require 10"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_meta.js)"; case "$$output" in *"module-meta true true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_missing.js)"; case "$$output" in *"module-missing EMODULE_NOT_FOUND module.require true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_unsupported.js)"; case "$$output" in *"module-unsupported EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:

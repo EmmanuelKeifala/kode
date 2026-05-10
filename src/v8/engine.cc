@@ -7,7 +7,7 @@ namespace kode { namespace v8embed {
 bool available() { return false; }
 bool initialize(std::string* /*error_out*/) { return false; }
 void shutdown() {}
-std::string runScript(const std::string& /*code*/, std::string* error_out) {
+std::string runScript(const std::string& /*code*/, const std::string& /*filename*/, std::string* error_out) {
     if (error_out) *error_out = "V8 not available (build without KODE_WITH_V8)";
     return std::string();
 }
@@ -20,8 +20,11 @@ std::string runScript(const std::string& /*code*/, std::string* error_out) {
 #include <libplatform/libplatform.h>
 #include <memory>
 #include <iostream>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
 #include "../filesystem/modern_fs.h"
 
 namespace kode { namespace v8embed {
@@ -30,6 +33,9 @@ static std::unique_ptr<v8::Platform> g_platform;
 static v8::Isolate* g_isolate = nullptr;
 static v8::ArrayBuffer::Allocator* g_allocator = nullptr;
 static v8::Global<v8::Context> g_context;
+static std::unordered_map<std::string, v8::Global<v8::Value>> g_module_cache;
+static std::vector<std::string> g_module_dir_stack;
+static std::string g_entry_dir;
 
 v8::Local<v8::String> V8String(v8::Isolate* isolate, const char* value) {
     return v8::String::NewFromUtf8(isolate, value).ToLocalChecked();
@@ -71,16 +77,106 @@ void RejectPromise(v8::Local<v8::Context> context,
 }
 
 v8::Local<v8::Object> CreateKodeError(v8::Isolate* isolate,
-                                      v8::Local<v8::Context> context,
-                                      const std::string& code,
-                                      const std::string& message,
-                                      const std::string& operation,
+                                       v8::Local<v8::Context> context,
+                                       const std::string& code,
+                                       const std::string& message,
+                                       const std::string& operation,
                                       const std::string& path) {
     v8::Local<v8::Object> error = v8::Exception::Error(V8String(isolate, message)).As<v8::Object>();
     error->Set(context, V8String(isolate, "code"), V8String(isolate, code)).FromMaybe(false);
     error->Set(context, V8String(isolate, "operation"), V8String(isolate, operation)).FromMaybe(false);
     error->Set(context, V8String(isolate, "path"), V8String(isolate, path)).FromMaybe(false);
     return error;
+}
+
+std::string NormalizePath(const std::filesystem::path& path) {
+    return std::filesystem::absolute(path).lexically_normal().generic_string();
+}
+
+std::string Dirname(const std::string& path) {
+    return std::filesystem::path(path).parent_path().generic_string();
+}
+
+bool IsLocalSpecifier(const std::string& specifier) {
+    return specifier.rfind("./", 0) == 0 || specifier.rfind("../", 0) == 0;
+}
+
+bool ReadFileText(const std::string& path, std::string* out) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) return false;
+    *out = std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return true;
+}
+
+v8::Local<v8::Value> LoadLocalModule(v8::Isolate* isolate,
+                                     v8::Local<v8::Context> context,
+                                     const std::string& specifier) {
+    const std::string base_dir = !g_module_dir_stack.empty() ? g_module_dir_stack.back() : g_entry_dir;
+    const std::string filename = NormalizePath(std::filesystem::path(base_dir) / specifier);
+
+    auto cached = g_module_cache.find(filename);
+    if (cached != g_module_cache.end()) {
+        return v8::Local<v8::Value>::New(isolate, cached->second);
+    }
+
+    std::string source_text;
+    if (!ReadFileText(filename, &source_text)) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EMODULE_NOT_FOUND", "Cannot find module '" + specifier + "'", "module.require", filename));
+        return v8::Local<v8::Value>();
+    }
+
+    v8::Local<v8::Object> exports = v8::Object::New(isolate);
+    v8::Local<v8::Object> module = v8::Object::New(isolate);
+    module->Set(context, V8String(isolate, "exports"), exports).FromMaybe(false);
+    g_module_cache[filename].Reset(isolate, exports);
+
+    std::string wrapped = "(function(exports, require, module, __filename, __dirname) {\n" + source_text + "\n})";
+    v8::Local<v8::Script> script;
+    if (!v8::Script::Compile(context, V8String(isolate, wrapped)).ToLocal(&script)) {
+        g_module_cache.erase(filename);
+        return v8::Local<v8::Value>();
+    }
+
+    v8::Local<v8::Value> wrapper_value;
+    if (!script->Run(context).ToLocal(&wrapper_value) || !wrapper_value->IsFunction()) {
+        g_module_cache.erase(filename);
+        return v8::Local<v8::Value>();
+    }
+
+    v8::Local<v8::Value> require_value;
+    if (!context->Global()->Get(context, V8String(isolate, "require")).ToLocal(&require_value) || !require_value->IsFunction()) {
+        g_module_cache.erase(filename);
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINTERNAL", "Global require is not available", "module.require", filename));
+        return v8::Local<v8::Value>();
+    }
+
+    const std::string dirname = Dirname(filename);
+    v8::Local<v8::Value> argv[] = {
+        exports,
+        require_value,
+        module,
+        V8String(isolate, filename),
+        V8String(isolate, dirname),
+    };
+
+    g_module_dir_stack.push_back(dirname);
+    v8::Local<v8::Value> ignored;
+    bool ok = wrapper_value.As<v8::Function>()->Call(context, context->Global(), 5, argv).ToLocal(&ignored);
+    g_module_dir_stack.pop_back();
+    if (!ok) {
+        g_module_cache.erase(filename);
+        return v8::Local<v8::Value>();
+    }
+
+    v8::Local<v8::Value> module_exports;
+    if (!module->Get(context, V8String(isolate, "exports")).ToLocal(&module_exports)) {
+        g_module_cache.erase(filename);
+        return v8::Local<v8::Value>();
+    }
+    g_module_cache[filename].Reset(isolate, module_exports);
+    return module_exports;
 }
 
 std::string FileKind(const ModernFS::FileInfo& info) {
@@ -436,44 +532,54 @@ void FSInfoCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
 void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
     v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    if (args.Length() < 1 || !args[0]->IsString()) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "require requires a module string", "module.require", ""));
+        return;
+    }
     v8::String::Utf8Value str(isolate, args[0]);
-    std::string moduleName(*str);
+    std::string moduleName(*str, str.length());
     
     if (moduleName == "fs" || moduleName == "kode:fs") {
         v8::Local<v8::Object> fs = v8::Object::New(isolate);
-        if (!fs->Set(isolate->GetCurrentContext(),
+        if (!fs->Set(context,
                 v8::String::NewFromUtf8(isolate, "readFile").ToLocalChecked(),
-                v8::Function::New(isolate->GetCurrentContext(), FSReadFileCallback).ToLocalChecked()).FromMaybe(false)) {
+                v8::Function::New(context, FSReadFileCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(v8::String::NewFromUtf8(isolate, "Failed to initialize fs module").ToLocalChecked());
             return;
         }
-        if (!fs->Set(isolate->GetCurrentContext(),
+        if (!fs->Set(context,
                 V8String(isolate, "readText"),
-                v8::Function::New(isolate->GetCurrentContext(), FSReadTextCallback).ToLocalChecked()).FromMaybe(false)) {
+                v8::Function::New(context, FSReadTextCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(V8String(isolate, "Failed to initialize fs.readText"));
             return;
         }
-        if (!fs->Set(isolate->GetCurrentContext(),
+        if (!fs->Set(context,
                 V8String(isolate, "read"),
-                v8::Function::New(isolate->GetCurrentContext(), FSReadCallback).ToLocalChecked()).FromMaybe(false)) {
+                v8::Function::New(context, FSReadCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(V8String(isolate, "Failed to initialize fs.read"));
             return;
         }
-        if (!fs->Set(isolate->GetCurrentContext(),
+        if (!fs->Set(context,
                 V8String(isolate, "write"),
-                v8::Function::New(isolate->GetCurrentContext(), FSWriteCallback).ToLocalChecked()).FromMaybe(false)) {
+                v8::Function::New(context, FSWriteCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(V8String(isolate, "Failed to initialize fs.write"));
             return;
         }
-        if (!fs->Set(isolate->GetCurrentContext(),
+        if (!fs->Set(context,
                 V8String(isolate, "info"),
-                v8::Function::New(isolate->GetCurrentContext(), FSInfoCallback).ToLocalChecked()).FromMaybe(false)) {
+                v8::Function::New(context, FSInfoCallback).ToLocalChecked()).FromMaybe(false)) {
             isolate->ThrowException(V8String(isolate, "Failed to initialize fs.info"));
             return;
         }
         args.GetReturnValue().Set(fs);
+    } else if (IsLocalSpecifier(moduleName)) {
+        v8::Local<v8::Value> module = LoadLocalModule(isolate, context, moduleName);
+        if (!module.IsEmpty()) args.GetReturnValue().Set(module);
     } else {
-         isolate->ThrowException(v8::String::NewFromUtf8(isolate, ("Cannot find module '" + moduleName + "'").c_str()).ToLocalChecked());
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EUNSUPPORTED_MODULE", "Unsupported module '" + moduleName + "'", "module.require", moduleName));
     }
 }
 
@@ -638,6 +744,12 @@ bool initialize(std::string* error_out) {
 
 void shutdown() {
     if (!g_isolate) return;
+    for (auto& entry : g_module_cache) {
+        entry.second.Reset();
+    }
+    g_module_cache.clear();
+    g_module_dir_stack.clear();
+    g_entry_dir.clear();
     g_context.Reset(); // Release context
     g_isolate->Dispose();
     g_isolate = nullptr;
@@ -654,7 +766,7 @@ void shutdown() {
     g_platform.reset();
 }
 
-std::string runScript(const std::string& code, std::string* error_out) {
+std::string runScript(const std::string& code, const std::string& filename, std::string* error_out) {
     if (!g_isolate) {
         if (error_out) *error_out = "V8 not initialized";
         return std::string();
@@ -665,6 +777,7 @@ std::string runScript(const std::string& code, std::string* error_out) {
     // Use the persistent context
     v8::Local<v8::Context> context = v8::Local<v8::Context>::New(g_isolate, g_context);
     v8::Context::Scope context_scope(context);
+    g_entry_dir = Dirname(NormalizePath(filename));
 
     v8::TryCatch try_catch(g_isolate);
     v8::Local<v8::String> source;

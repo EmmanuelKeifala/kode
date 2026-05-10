@@ -103,7 +103,7 @@ bool KodeRuntime::ExecuteString(const std::string& source, const std::string& fi
         }
         if (!v8_disabled && kode::v8embed::available()) {
             std::string err;
-            std::string result = kode::v8embed::runScript(source, &err);
+            std::string result = kode::v8embed::runScript(source, filename, &err);
             if (!err.empty()) {
                 std::cerr << "[V8] Error: " << err << std::endl;
                 // Fall back to parser below
