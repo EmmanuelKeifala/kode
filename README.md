@@ -1,186 +1,332 @@
-# kode
+# Kode
 
-# Kode Runtime - Project Structure
+Kode is an experimental JavaScript runtime built on V8 and libuv.
 
-## Overview
-Kode is a learning JavaScript runtime built with modern C++ and libuv, designed to demonstrate how Node.js works internally. The project is organized into modular components for better maintainability and understanding.
+It is not trying to be a Node.js clone. Kode uses the same proven foundations for JavaScript execution and async I/O, but explores a smaller, more explicit runtime surface: Kode-native host modules, structured async ownership, clear cancellation, and predictable error objects.
 
-## Directory Structure
+The project is early, but it already runs real JavaScript through V8, supports local CommonJS modules, exposes Kode-native filesystem/path APIs, and has smoke tests for the runtime behavior that exists today.
 
-```
-kode/
-├── src/                          # Source code (organized by feature)
-│   ├── main.cc                   # Main entry point
-│   ├── core/                     # Core runtime engine
-│   │   ├── runtime.h             # Runtime class definition
-│   │   └── runtime.cc            # Runtime implementation
-│   ├── parser/                   # JavaScript parser
-│   │   ├── parser.h              # Advanced parser interface
-│   │   └── parser.cc             # Production-ready parser
-│   ├── filesystem/               # File system operations
-│   │   ├── fs.h                  # Legacy FS API
-│   │   ├── fs.cc                 # Legacy FS implementation
-│   │   ├── modern_fs.h           # Modern FS API
-│   │   └── modern_fs.cc          # Modern FS implementation
-│   ├── examples/                 # Example programs
-│   │   └── simple-test.cpp       # Basic V8 test
-│   └── tests/                    # Test files and demos
-├── bin/                          # Compiled binaries
-├── libuv/                        # libuv library
-├── v8/                           # V8 JavaScript engine
-├── Makefile                      # Build configuration
-└── README.md                     # Project documentation
-```
+## Why Kode Exists
 
-## Component Architecture
+Node made JavaScript useful outside the browser. Kode asks what a fresh runtime can look like if it keeps the good parts and rethinks the host API surface:
 
-### 1. Core Runtime (`src/core/`)
-**Purpose**: Main JavaScript runtime engine
-**Key Features**:
-- Event loop management (libuv integration)
-- Built-in functions (console, timers)
-- Module loading and execution
-- Memory management
+- explicit `kode:*` built-ins instead of accidental compatibility creep
+- promise-first filesystem operations with structured results
+- runtime-owned async scopes instead of loose background work
+- cancellation signals with stable error shapes
+- no `process` global by default
+- V8 as the only JavaScript execution engine
 
-**Files**:
-- `runtime.h` - Class definitions and interfaces
-- `runtime.cc` - Implementation of runtime logic
+Kode is a place to build those ideas incrementally and keep them testable.
 
-### 2. Parser (`src/parser/`)
-**Purpose**: Advanced JavaScript syntax analysis
-**Key Features**:
-- AST-like statement representation
-- Modern JS syntax support (ES6+, async/await)
-- Error recovery and reporting
-- Performance monitoring
-- 25+ statement types
+## What Works Today
 
-**Files**:
-- `parser.h` - Parser interface and data structures
-- `parser.cc` - Production-ready parsing engine
+Current runtime capabilities:
 
-### 3. File System (`src/filesystem/`)
-**Purpose**: File I/O operations with modern and legacy APIs
-**Key Features**:
-- Legacy callback-style API (Node.js compatible)
-- Modern structured result API (next-generation)
-- Async operations with libuv thread pool
-- Rich metadata (MIME types, file stats)
-- Automatic directory creation
+- Execute JavaScript files and `-e` snippets through V8.
+- Use `console.log`.
+- Load local CommonJS modules with `require("./file")` and `require("./file.js")`.
+- Use CommonJS `exports`, `module.exports`, `__filename`, and `__dirname`.
+- Reuse modules through a normalized absolute-path module cache.
+- Handle circular CommonJS dependencies, including partial exports.
+- Use `require("kode:fs")` for Kode-native filesystem operations.
+- Use `require("kode:path")` for pure path manipulation.
+- Use `Kode.scope(fn)` and `scope.async(fn)` for structured async ownership.
+- Use `Kode.timeout(ms)` for cancellation signals.
+- Read startup environment through read-only `Kode.env`.
+- Read invocation data through read-only `Kode.args`.
+- Verify core behavior with Makefile smoke tests.
 
-**Files**:
-- `fs.h/fs.cc` - Legacy file system API
-- `modern_fs.h/modern_fs.cc` - Next-generation file system API
+## Quick Start
 
-### 4. Main Entry Point (`src/main.cc`)
-**Purpose**: Application entry point and CLI handling
-**Key Features**:
-- Command-line argument processing
-- Demo mode for learning
-- Version information
-- Usage help
+Build the runtime:
 
-## Key Design Principles
-
-### 1. **Modular Architecture**
-Each component is self-contained with clear interfaces:
-```cpp
-#include "core/runtime.h"      // Core engine
-#include "parser/parser.h"     // JavaScript parsing
-#include "filesystem/fs.h"     // File operations
+```sh
+make build
 ```
 
-### 2. **Educational Focus**
-- Extensive comments explaining Node.js concepts
-- Demo mode showing different features
-- Clear separation of concerns
-- Production-ready patterns
+Run a JavaScript file:
 
-### 3. **Modern C++ Practices**
-- RAII for resource management
-- Smart pointers where appropriate
-- Exception safety
-- STL containers and algorithms
-
-### 4. **Performance Oriented**
-- libuv event loop for async operations
-- Thread pool for I/O operations
-- Parse time measurement
-- Memory-efficient data structures
-
-## Build System
-
-### Makefile Structure
-```makefile
-# Source files organized by component
-APP = src/main.cc src/core/runtime.cc src/filesystem/fs.cc \
-      src/filesystem/modern_fs.cc src/parser/parser.cc
-
-# Dependencies
-- libuv (event loop, async I/O)
-- V8 (future JavaScript engine integration)
+```sh
+./bin/kode tests/modules/app_require_exports.js
 ```
 
-### Build Targets
-- `make build` - Build the main runtime
-- `make clean` - Clean build artifacts
-- `make examples` - Build example programs
+Run inline code:
 
-## Usage Examples
-
-### Basic Execution
-```bash
-# Run a JavaScript file
-./bin/kode script.js
-
-# Execute code directly
-./bin/kode -e "console.log('Hello World')"
-
-# Demo mode (shows all features)
-./bin/kode
+```sh
+./bin/kode -e 'console.log("hello from Kode")'
 ```
 
-### Feature Demonstrations
-```javascript
-// Modern file system API
-fs.readFile('data.txt');        // Returns rich metadata
-fs.writeFile('out.txt', 'data'); // Auto-creates directories
+Run the main verification suite:
 
-// Async operations
-setTimeout();                    // Event loop integration
-
-// Module system
-const fs = require('fs');        // CommonJS support
+```sh
+make build && make test-v8-microtask && make test-structured-runtime && make test-http && make test-concurrency
 ```
 
-## Development Workflow
+## Examples
 
-### Adding New Features
-1. Create appropriate directory under `src/`
-2. Define interface in `.h` file
-3. Implement in `.cc` file
-4. Update `Makefile` APP definition
-5. Add tests/examples
-6. Update documentation
+### Local CommonJS Modules
 
-### Code Organization Guidelines
-- **Headers**: Interface definitions, forward declarations
-- **Implementation**: Logic, error handling, performance code
-- **Separation**: Each component handles one responsibility
-- **Documentation**: Explain the "why" not just the "what"
+```js
+// math.js
+exports.add = (a, b) => a + b
+```
 
-## Future Enhancements
+```js
+// app.js
+const math = require("./math")
+console.log("sum", math.add(2, 3))
+```
 
-### Planned Components
-- `src/network/` - HTTP server implementation
-- `src/crypto/` - Cryptographic functions
-- `src/streams/` - Stream processing
-- `src/cluster/` - Multi-process support
+```sh
+./bin/kode app.js
+```
 
-### Integration Points
-- V8 JavaScript engine (when architecture issues resolved)
-- Native module loading
-- Debugger protocol
-- Performance profiling
+### Kode-Native Filesystem
 
-This modular architecture makes Kode both educational and extensible, demonstrating professional software organization while teaching Node.js internals.
+```js
+const fs = require("kode:fs")
+
+Kode.scope(async (scope) => {
+  const file = await scope.async(() => fs.read("README.md", { as: "text" }))
+  console.log(file.info.kind, file.info.mimeType)
+  console.log(file.text.slice(0, 40))
+})
+```
+
+Write a file and create parent directories intentionally:
+
+```js
+const fs = require("kode:fs")
+
+Kode.scope(async (scope) => {
+  const result = await scope.async(() =>
+    fs.write("tmp/kode/out.txt", "hello", { create: "parents" })
+  )
+
+  console.log(result.bytesWritten, result.info.kind)
+})
+```
+
+### Path Utilities
+
+```js
+const path = require("kode:path")
+
+console.log(path.join("tmp", "kode", "out.txt"))
+console.log(path.normalize("a/../b/./c.txt"))
+console.log(path.dirname("src/v8/engine.cc"))
+console.log(path.basename("src/v8/engine.cc"))
+```
+
+Kode intentionally exposes `kode:path`, not a bare Node-compatible `path` module.
+
+### Structured Async Scope
+
+```js
+Kode.scope(async (scope) => {
+  const first = scope.async(async () => "alpha")
+  const second = scope.async(async () => "beta")
+
+  console.log(await first, await second)
+})
+```
+
+`Kode.activeOperations()` reports runtime-owned async work:
+
+```js
+console.log(Kode.activeOperations())
+```
+
+### Cancellation
+
+```js
+const fs = require("kode:fs")
+const timeout = Kode.timeout(0)
+
+Kode.scope(async (scope) => {
+  try {
+    await scope.async(() => fs.read("README.md", { as: "text", signal: timeout.signal }))
+  } catch (err) {
+    console.log(err.code, err.operation)
+  }
+})
+```
+
+Cancellation currently rejects work that sees an already-aborted signal. It does not forcibly stop libuv threadpool work that has already started.
+
+### Environment And Arguments
+
+Kode does not expose Node's `process` global. Runtime host data is available through Kode-native APIs:
+
+```js
+console.log(Kode.env.has("HOME"))
+console.log(Kode.env.get("HOME"))
+console.log(Kode.args.script)
+console.log(Kode.args.values)
+console.log(typeof process) // undefined
+```
+
+Run with script arguments:
+
+```sh
+./bin/kode app.js alpha beta
+```
+
+## Runtime APIs
+
+### `require("kode:fs")`
+
+Current Kode-native filesystem surface:
+
+- `fs.read(path, { as: "text", signal? }) -> Promise<{ text, info }>`
+- `fs.write(path, data, { create?: "none" | "parents", signal? }) -> Promise<{ bytesWritten, info }>`
+- `fs.info(path) -> Promise<info | null>`
+- `fs.readText(path) -> Promise<string>` compatibility helper
+- `fs.readFile(path, callback)` legacy callback helper
+
+Errors are JavaScript `Error` objects with stable fields such as `code`, `operation`, and `path`.
+
+### `require("kode:path")`
+
+Current path surface:
+
+- `join(...parts)`
+- `normalize(path)`
+- `dirname(path)`
+- `basename(path)`
+- `extname(path)`
+- `isAbsolute(path)`
+- `resolve(...parts)`
+
+These are string/path transformations only. They do not check whether files exist.
+
+### `Kode`
+
+Current runtime surface:
+
+- `Kode.scope(fn)`
+- `scope.async(fn)` inside a scope
+- `Kode.activeOperations()`
+- `Kode.timeout(ms)`
+- `Kode.env.get(name)`
+- `Kode.env.has(name)`
+- `Kode.env.toObject()`
+- `Kode.args.executable`
+- `Kode.args.script`
+- `Kode.args.values`
+
+`Kode`, `Kode.env`, `Kode.args`, and `Kode.args.values` are protected against accidental replacement from JavaScript.
+
+## Architecture
+
+High-level structure:
+
+```text
+src/
+  main.cc                 CLI entry point and argument handling
+  core/                   Runtime lifecycle, event loop, execution wiring
+  v8/                     V8 embedder and JavaScript host bindings
+    engine.cc             V8 lifecycle, context setup, runScript
+    module_loader.*       CommonJS require, local module cache, built-in dispatch
+    kode_host.*           Kode bootstrap, env, args
+    v8_helpers.*          Shared V8 helpers and error formatting
+    builtins/fs.*         kode:fs bindings
+    builtins/path.*       kode:path bindings
+  filesystem/             ModernFS and legacy filesystem internals
+  concurrency/            Cooperative task/concurrency experiments
+  http/                   Native HTTP server experiments
+  parser/                 Legacy learning scaffold, not the runtime execution path
+tests/                    JavaScript and C++ smoke tests
+```
+
+Execution flow:
+
+1. `main.cc` parses CLI input and captures invocation data.
+2. `KodeRuntime` initializes libuv, filesystem internals, concurrency internals, and V8.
+3. The V8 embedder creates the isolate/context and installs `require`, `console`, and `Kode`.
+4. Scripts execute through V8 only.
+5. The libuv loop drains pending host work.
+6. Runtime shutdown clears module and host state, then disposes V8.
+
+## Design Philosophy
+
+Kode favors explicit runtime design over compatibility by accident.
+
+- Use `kode:*` for Kode-native built-ins.
+- Keep APIs small until behavior is proven by tests.
+- Prefer structured results over overloaded call signatures.
+- Prefer stable error fields over string matching.
+- Keep async work owned by runtime scopes where possible.
+- Do not add Node compatibility unless there is a concrete reason.
+
+Compatibility aliases may exist while the project evolves, but new APIs should be Kode-native first.
+
+## Status And Limitations
+
+Kode is experimental. It is useful for runtime development and API exploration, not production workloads.
+
+Current limitations:
+
+- No npm package resolution.
+- No `package.json` module resolution.
+- No ESM loader.
+- No Node `process` global.
+- No general Node standard-library compatibility target.
+- Cancellation is cooperative and currently strongest before host work starts.
+- Parser code remains in the repository as a learning scaffold, but normal JS execution uses V8.
+
+## Roadmap
+
+Near-term runtime work:
+
+- `kode:crypto` basics.
+- HTTP client APIs.
+- File watchers.
+- More robust cancellation for active host operations.
+- Stronger active-operation diagnostics.
+- More module loader behavior only when needed.
+
+Longer-term possibilities:
+
+- Dedicated package/module story that is not just Node compatibility by default.
+- Debugging/profiling hooks.
+- Cleaner concurrency integration with JS promises and host tasks.
+- More complete networking primitives.
+
+## Development
+
+Build:
+
+```sh
+make build
+```
+
+Run focused runtime smoke tests:
+
+```sh
+make test-structured-runtime
+```
+
+Run full verification before committing runtime changes:
+
+```sh
+make build && make test-v8-microtask && make test-structured-runtime && make test-http && make test-concurrency
+```
+
+Clean generated binaries:
+
+```sh
+make clean
+```
+
+## Repository Notes
+
+- `v8/` and `libuv/` are expected to contain local build artifacts and headers used by the Makefile.
+- `bin/` is generated.
+- `.worktrees/` is ignored and used for isolated feature worktrees.
+- Markdown docs are force-added when needed because this repository currently ignores `*.md`.
+
+## License
+
+No license file is currently present. Add one before distributing or accepting external contributions.
