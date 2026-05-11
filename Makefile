@@ -76,6 +76,21 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/modules/app_meta.js)"; case "$$output" in *"module-meta true true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/modules/app_missing.js)"; case "$$output" in *"module-missing EMODULE_NOT_FOUND module.require true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/modules/app_unsupported.js)"; case "$$output" in *"module-unsupported EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_require_extensionless.js)"; case "$$output" in *"module-extensionless 13"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_nested_extensionless.js)"; case "$$output" in *"module-nested-extensionless 17"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_cycle.js)"; case "$$output" in *"module-cycle a-done a-start a-start"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_cycle_reassign_exports.js)"; case "$$output" in *"module-cycle-reassign current current captured true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_module_syntax_error.js 2>&1 || true)"; case "$$output" in *"bad_syntax.js:1"*|*"bad_syntax.js:2"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/modules/app_module_runtime_error.js 2>&1 || true)"; case "$$output" in *"runtime_error.js:1"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_path_basic.js)"; case "$$output" in *"path-join a/b/c.txt"*"path-normalize b/c.txt"*"path-dir-base a/b c.txt"*"path-ext-abs .txt true"*"path-normalize-parent a"*"path-resolve-parent /tmp"*"path-basename-trailing b"*"path-dirname-relative ."*"path-root / / /"*"path-join-absolute-segment a/b /a/b"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_path_no_bare_alias.js)"; case "$$output" in *"path-no-bare EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(env KODE_ENV_TEST=hello '__proto__=sentinel' ./bin/kode tests/kode_env_basic.js)"; case "$$output" in *"env-has true"*"env-get hello"*"env-missing true"*"env-object hello"*"env-frozen true true"*"env-proto true sentinel"*"kode-global-protected function true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_args_basic.js alpha beta)"; case "$$output" in *"args-script true"*"args-values alpha,beta"*"args-frozen true true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode -e 'console.log("args-e", Kode.args.script === undefined, Kode.args.values.join(","))' alpha beta)"; case "$$output" in *"args-e true alpha,beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_no_process_global.js)"; case "$$output" in *"no-process undefined"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/parser_fallback_syntax_error.js 2>&1; printf ' status:%s' "$$?")"; case "$$output" in *"status:0"*|*"after syntax"*) printf '%s\n' "$$output"; exit 1;; *"parser_fallback_syntax_error.js"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/parser_fallback_runtime_error.js 2>&1; printf ' status:%s' "$$?")"; case "$$output" in *"status:0"*) printf '%s\n' "$$output"; exit 1;; *"parser_fallback_runtime_error.js"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(KODE_USE_V8=0 ./bin/kode tests/kode_no_process_global.js 2>&1; printf ' status:%s' "$$?")"; case "$$output" in *"status:0"*) printf '%s\n' "$$output"; exit 1;; *"V8 is required"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 
 # Future: Build with V8 when we fix the compatibility issues
 build-v8:

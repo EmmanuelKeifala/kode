@@ -7,6 +7,7 @@ namespace kode { namespace v8embed {
 bool available() { return false; }
 bool initialize(std::string* /*error_out*/) { return false; }
 void shutdown() {}
+void setRuntimeOptions(const RuntimeOptions& /*options*/) {}
 std::string runScript(const std::string& /*code*/, const std::string& /*filename*/, std::string* error_out) {
     if (error_out) *error_out = "V8 not available (build without KODE_WITH_V8)";
     return std::string();
@@ -27,6 +28,8 @@ std::string runScript(const std::string& /*code*/, const std::string& /*filename
 #include <vector>
 #include "../filesystem/modern_fs.h"
 
+extern char** environ;
+
 namespace kode { namespace v8embed {
 
 static std::unique_ptr<v8::Platform> g_platform;
@@ -36,6 +39,8 @@ static v8::Global<v8::Context> g_context;
 static std::unordered_map<std::string, v8::Global<v8::Value>> g_module_cache;
 static std::vector<std::string> g_module_dir_stack;
 static std::string g_entry_dir;
+static RuntimeOptions g_runtime_options;
+static std::unordered_map<std::string, std::string> g_env_snapshot;
 
 v8::Local<v8::String> V8String(v8::Isolate* isolate, const char* value) {
     return v8::String::NewFromUtf8(isolate, value).ToLocalChecked();
@@ -97,6 +102,46 @@ std::string Dirname(const std::string& path) {
     return std::filesystem::path(path).parent_path().generic_string();
 }
 
+std::string TrimTrailingSeparators(const std::string& path) {
+    size_t end = path.size();
+    while (end > 1 && path[end - 1] == '/') end--;
+    return path.substr(0, end);
+}
+
+std::string LexicalPath(const std::filesystem::path& path) {
+    std::string normalized = TrimTrailingSeparators(path.lexically_normal().generic_string());
+    return normalized.empty() ? "." : normalized;
+}
+
+std::string PathDirname(const std::string& path) {
+    std::string clean = TrimTrailingSeparators(path);
+    if (clean == "/") return clean;
+    std::string parent = std::filesystem::path(clean).parent_path().generic_string();
+    return parent.empty() ? "." : parent;
+}
+
+std::string PathBasename(const std::string& path) {
+    std::string clean = TrimTrailingSeparators(path);
+    if (clean == "/") return clean;
+    return std::filesystem::path(clean).filename().generic_string();
+}
+
+bool ReadStringArg(v8::Isolate* isolate,
+                   v8::Local<v8::Context> context,
+                   const v8::FunctionCallbackInfo<v8::Value>& args,
+                   int index,
+                   const std::string& operation,
+                   std::string* out) {
+    if (index >= args.Length() || !args[index]->IsString()) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", operation + " requires string arguments", operation, ""));
+        return false;
+    }
+    v8::String::Utf8Value str(isolate, args[index]);
+    *out = std::string(*str, str.length());
+    return true;
+}
+
 bool IsLocalSpecifier(const std::string& specifier) {
     return specifier.rfind("./", 0) == 0 || specifier.rfind("../", 0) == 0;
 }
@@ -108,15 +153,53 @@ bool ReadFileText(const std::string& path, std::string* out) {
     return true;
 }
 
+bool FileExists(const std::string& path) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec);
+}
+
+std::string ResolveLocalModulePath(const std::string& base_dir, const std::string& specifier) {
+    std::string literal = NormalizePath(std::filesystem::path(base_dir) / specifier);
+    if (FileExists(literal)) return literal;
+    if (std::filesystem::path(literal).extension().empty()) {
+        std::string with_js = literal + ".js";
+        if (FileExists(with_js)) return with_js;
+        return with_js;
+    }
+    return literal;
+}
+
+std::string FormatTryCatch(v8::Isolate* isolate, v8::TryCatch& try_catch, const std::string& fallback_file) {
+    std::string file = fallback_file;
+    int line = 0;
+    v8::Local<v8::Message> message = try_catch.Message();
+    if (!message.IsEmpty()) {
+        v8::String::Utf8Value resource(isolate, message->GetScriptResourceName());
+        if (resource.length() > 0) file = std::string(*resource, resource.length());
+        line = message->GetLineNumber(isolate->GetCurrentContext()).FromMaybe(0);
+    }
+    v8::String::Utf8Value err(isolate, try_catch.Exception());
+    std::string text = err.length() ? std::string(*err, err.length()) : "JavaScript error";
+    if (line > 0) return file + ":" + std::to_string(line) + ": " + text;
+    return file + ": " + text;
+}
+
 v8::Local<v8::Value> LoadLocalModule(v8::Isolate* isolate,
-                                     v8::Local<v8::Context> context,
-                                     const std::string& specifier) {
+                                      v8::Local<v8::Context> context,
+                                      const std::string& specifier) {
     const std::string base_dir = !g_module_dir_stack.empty() ? g_module_dir_stack.back() : g_entry_dir;
-    const std::string filename = NormalizePath(std::filesystem::path(base_dir) / specifier);
+    const std::string filename = ResolveLocalModulePath(base_dir, specifier);
 
     auto cached = g_module_cache.find(filename);
     if (cached != g_module_cache.end()) {
-        return v8::Local<v8::Value>::New(isolate, cached->second);
+        v8::Local<v8::Value> cached_value = v8::Local<v8::Value>::New(isolate, cached->second);
+        if (!cached_value->IsObject()) return cached_value;
+
+        v8::Local<v8::Value> cached_exports;
+        if (!cached_value.As<v8::Object>()->Get(context, V8String(isolate, "exports")).ToLocal(&cached_exports)) {
+            return v8::Local<v8::Value>();
+        }
+        return cached_exports;
     }
 
     std::string source_text;
@@ -129,11 +212,14 @@ v8::Local<v8::Value> LoadLocalModule(v8::Isolate* isolate,
     v8::Local<v8::Object> exports = v8::Object::New(isolate);
     v8::Local<v8::Object> module = v8::Object::New(isolate);
     module->Set(context, V8String(isolate, "exports"), exports).FromMaybe(false);
-    g_module_cache[filename].Reset(isolate, exports);
+    g_module_cache[filename].Reset(isolate, module);
 
-    std::string wrapped = "(function(exports, require, module, __filename, __dirname) {\n" + source_text + "\n})";
+    std::string wrapped = "(function(exports, require, module, __filename, __dirname) {" + source_text;
+    if (wrapped.empty() || wrapped.back() != '\n') wrapped += "\n";
+    wrapped += "})";
+    v8::ScriptOrigin origin(V8String(isolate, filename));
     v8::Local<v8::Script> script;
-    if (!v8::Script::Compile(context, V8String(isolate, wrapped)).ToLocal(&script)) {
+    if (!v8::Script::Compile(context, V8String(isolate, wrapped), &origin).ToLocal(&script)) {
         g_module_cache.erase(filename);
         return v8::Local<v8::Value>();
     }
@@ -175,7 +261,6 @@ v8::Local<v8::Value> LoadLocalModule(v8::Isolate* isolate,
         g_module_cache.erase(filename);
         return v8::Local<v8::Value>();
     }
-    g_module_cache[filename].Reset(isolate, module_exports);
     return module_exports;
 }
 
@@ -528,6 +613,8 @@ void FSInfoCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     args.GetReturnValue().Set(resolver->GetPromise());
 }
 
+v8::Local<v8::Object> CreatePathModule(v8::Isolate* isolate, v8::Local<v8::Context> context);
+
 // require implementation
 void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Isolate* isolate = args.GetIsolate();
@@ -541,7 +628,9 @@ void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::String::Utf8Value str(isolate, args[0]);
     std::string moduleName(*str, str.length());
     
-    if (moduleName == "fs" || moduleName == "kode:fs") {
+    if (moduleName == "kode:path") {
+        args.GetReturnValue().Set(CreatePathModule(isolate, context));
+    } else if (moduleName == "fs" || moduleName == "kode:fs") {
         v8::Local<v8::Object> fs = v8::Object::New(isolate);
         if (!fs->Set(context,
                 v8::String::NewFromUtf8(isolate, "readFile").ToLocalChecked(),
@@ -581,6 +670,180 @@ void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
         isolate->ThrowException(CreateKodeError(isolate, context,
             "EUNSUPPORTED_MODULE", "Unsupported module '" + moduleName + "'", "module.require", moduleName));
     }
+}
+
+void PathJoinCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::filesystem::path path;
+    for (int i = 0; i < args.Length(); i++) {
+        std::string part;
+        if (!ReadStringArg(isolate, context, args, i, "kode:path.join", &part)) return;
+        if (i > 0) {
+            while (!part.empty() && (part[0] == '/' || part[0] == '\\')) {
+                part.erase(0, 1);
+            }
+        }
+        path /= part;
+    }
+    args.GetReturnValue().Set(V8String(isolate, LexicalPath(path)));
+}
+
+void PathNormalizeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string path;
+    if (!ReadStringArg(isolate, context, args, 0, "kode:path.normalize", &path)) return;
+    args.GetReturnValue().Set(V8String(isolate, LexicalPath(path)));
+}
+
+void PathDirnameCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string path;
+    if (!ReadStringArg(isolate, context, args, 0, "kode:path.dirname", &path)) return;
+    args.GetReturnValue().Set(V8String(isolate, PathDirname(path)));
+}
+
+void PathBasenameCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string path;
+    if (!ReadStringArg(isolate, context, args, 0, "kode:path.basename", &path)) return;
+    args.GetReturnValue().Set(V8String(isolate, PathBasename(path)));
+}
+
+void PathExtnameCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string path;
+    if (!ReadStringArg(isolate, context, args, 0, "kode:path.extname", &path)) return;
+    args.GetReturnValue().Set(V8String(isolate, std::filesystem::path(path).extension().generic_string()));
+}
+
+void PathIsAbsoluteCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string path;
+    if (!ReadStringArg(isolate, context, args, 0, "kode:path.isAbsolute", &path)) return;
+    args.GetReturnValue().Set(v8::Boolean::New(isolate, std::filesystem::path(path).is_absolute()));
+}
+
+void PathResolveCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::filesystem::path path = std::filesystem::current_path();
+    for (int i = 0; i < args.Length(); i++) {
+        std::string part;
+        if (!ReadStringArg(isolate, context, args, i, "kode:path.resolve", &part)) return;
+        std::filesystem::path next(part);
+        path = next.is_absolute() ? next : path / next;
+    }
+    args.GetReturnValue().Set(V8String(isolate, LexicalPath(path)));
+}
+
+v8::Local<v8::Object> CreatePathModule(v8::Isolate* isolate, v8::Local<v8::Context> context) {
+    v8::Local<v8::Object> path = v8::Object::New(isolate);
+    path->Set(context, V8String(isolate, "join"), v8::Function::New(context, PathJoinCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "normalize"), v8::Function::New(context, PathNormalizeCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "dirname"), v8::Function::New(context, PathDirnameCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "basename"), v8::Function::New(context, PathBasenameCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "extname"), v8::Function::New(context, PathExtnameCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "isAbsolute"), v8::Function::New(context, PathIsAbsoluteCallback).ToLocalChecked()).FromMaybe(false);
+    path->Set(context, V8String(isolate, "resolve"), v8::Function::New(context, PathResolveCallback).ToLocalChecked()).FromMaybe(false);
+    return path;
+}
+
+void CaptureEnvironment() {
+    g_env_snapshot.clear();
+    for (char** current = environ; current && *current; ++current) {
+        std::string entry(*current);
+        size_t equals = entry.find('=');
+        if (equals == std::string::npos) continue;
+        g_env_snapshot[entry.substr(0, equals)] = entry.substr(equals + 1);
+    }
+}
+
+void FreezeValue(v8::Local<v8::Context> context, v8::Local<v8::Value> value) {
+    if (!value->IsObject()) return;
+    value.As<v8::Object>()->SetIntegrityLevel(context, v8::IntegrityLevel::kFrozen).FromMaybe(false);
+}
+
+void EnvGetCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string name;
+    if (!ReadStringArg(isolate, context, args, 0, "Kode.env.get", &name)) return;
+    auto it = g_env_snapshot.find(name);
+    if (it == g_env_snapshot.end()) return;
+    args.GetReturnValue().Set(V8String(isolate, it->second));
+}
+
+void EnvHasCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    std::string name;
+    if (!ReadStringArg(isolate, context, args, 0, "Kode.env.has", &name)) return;
+    args.GetReturnValue().Set(v8::Boolean::New(isolate, g_env_snapshot.find(name) != g_env_snapshot.end()));
+}
+
+void EnvToObjectCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    v8::Local<v8::Object> object = v8::Object::New(isolate);
+    object->SetPrototype(context, v8::Null(isolate)).FromMaybe(false);
+    for (const auto& entry : g_env_snapshot) {
+        object->CreateDataProperty(context, V8String(isolate, entry.first), V8String(isolate, entry.second)).FromMaybe(false);
+    }
+    FreezeValue(context, object);
+    args.GetReturnValue().Set(object);
+}
+
+bool InstallKodeHostApis(v8::Isolate* isolate, v8::Local<v8::Context> context) {
+    v8::Local<v8::Value> kode_value;
+    if (!context->Global()->Get(context, V8String(isolate, "Kode")).ToLocal(&kode_value) || !kode_value->IsObject()) return false;
+    v8::Local<v8::Object> kode = kode_value.As<v8::Object>();
+
+    v8::Local<v8::Object> env = v8::Object::New(isolate);
+    env->Set(context, V8String(isolate, "get"), v8::Function::New(context, EnvGetCallback).ToLocalChecked()).FromMaybe(false);
+    env->Set(context, V8String(isolate, "has"), v8::Function::New(context, EnvHasCallback).ToLocalChecked()).FromMaybe(false);
+    env->Set(context, V8String(isolate, "toObject"), v8::Function::New(context, EnvToObjectCallback).ToLocalChecked()).FromMaybe(false);
+    FreezeValue(context, env);
+    kode->Set(context, V8String(isolate, "env"), env).FromMaybe(false);
+
+    v8::Local<v8::Array> values = v8::Array::New(isolate, static_cast<int>(g_runtime_options.args.size()));
+    for (size_t i = 0; i < g_runtime_options.args.size(); i++) {
+        values->Set(context, static_cast<uint32_t>(i), V8String(isolate, g_runtime_options.args[i])).FromMaybe(false);
+    }
+    FreezeValue(context, values);
+
+    v8::Local<v8::Object> args = v8::Object::New(isolate);
+    args->Set(context, V8String(isolate, "executable"), V8String(isolate, g_runtime_options.executable)).FromMaybe(false);
+    v8::Local<v8::Value> script = g_runtime_options.script.empty()
+        ? v8::Undefined(isolate).As<v8::Value>()
+        : V8String(isolate, g_runtime_options.script).As<v8::Value>();
+    args->Set(context, V8String(isolate, "script"), script).FromMaybe(false);
+    args->Set(context, V8String(isolate, "values"), values).FromMaybe(false);
+    FreezeValue(context, args);
+    kode->Set(context, V8String(isolate, "args"), args).FromMaybe(false);
+    FreezeValue(context, kode);
+    if (!context->Global()
+            ->DefineOwnProperty(context, V8String(isolate, "Kode"), kode,
+                static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete))
+            .FromMaybe(false)) {
+        return false;
+    }
+    return true;
 }
 
 bool InstallKodeRuntimeBootstrap(v8::Isolate* isolate, v8::Local<v8::Context> context, std::string* error_out) {
@@ -695,6 +958,10 @@ bool InstallKodeRuntimeBootstrap(v8::Isolate* isolate, v8::Local<v8::Context> co
 
 bool available() { return true; }
 
+void setRuntimeOptions(const RuntimeOptions& options) {
+    g_runtime_options = options;
+}
+
 bool initialize(std::string* error_out) {
     if (g_isolate) return true;
     
@@ -734,7 +1001,12 @@ bool initialize(std::string* error_out) {
                  v8::Function::New(context, ConsoleLogCallback).ToLocalChecked()).FromMaybe(false);
     context->Global()->Set(context, V8String(g_isolate, "console"), console).FromMaybe(false);
 
+    CaptureEnvironment();
     if (!InstallKodeRuntimeBootstrap(g_isolate, context, error_out)) {
+        return false;
+    }
+    if (!InstallKodeHostApis(g_isolate, context)) {
+        if (error_out) *error_out = "Failed to install Kode host APIs";
         return false;
     }
     g_context.Reset(g_isolate, context);
@@ -750,6 +1022,7 @@ void shutdown() {
     g_module_cache.clear();
     g_module_dir_stack.clear();
     g_entry_dir.clear();
+    g_env_snapshot.clear();
     g_context.Reset(); // Release context
     g_isolate->Dispose();
     g_isolate = nullptr;
@@ -786,11 +1059,12 @@ std::string runScript(const std::string& code, const std::string& filename, std:
         return std::string();
     }
 
+    const std::string normalized_filename = NormalizePath(filename);
+    v8::ScriptOrigin origin(V8String(g_isolate, normalized_filename));
     v8::Local<v8::Script> script;
-    if (!v8::Script::Compile(context, source).ToLocal(&script)) {
+    if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
         if (error_out) {
-            v8::String::Utf8Value err(g_isolate, try_catch.Exception());
-            *error_out = err.length() ? *err : "Script compile error";
+            *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
         }
         return std::string();
     }
@@ -798,8 +1072,7 @@ std::string runScript(const std::string& code, const std::string& filename, std:
     v8::Local<v8::Value> result;
     if (!script->Run(context).ToLocal(&result)) {
         if (error_out) {
-            v8::String::Utf8Value err(g_isolate, try_catch.Exception());
-            *error_out = err.length() ? *err : "Script run error";
+            *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
         }
         return std::string();
     }

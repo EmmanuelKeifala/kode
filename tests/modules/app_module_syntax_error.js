@@ -1,0 +1,1 @@
+require("./bad_syntax")

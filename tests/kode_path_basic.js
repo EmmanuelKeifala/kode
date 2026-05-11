@@ -1,0 +1,12 @@
+const path = require("kode:path")
+
+console.log("path-join", path.join("a", "b", "c.txt"))
+console.log("path-normalize", path.normalize("a/../b/./c.txt"))
+console.log("path-dir-base", path.dirname("a/b/c.txt"), path.basename("a/b/c.txt"))
+console.log("path-ext-abs", path.extname("a/b/c.txt"), path.isAbsolute("/tmp/file.txt"))
+console.log("path-normalize-parent", path.normalize("a/b/.."))
+console.log("path-resolve-parent", path.resolve("/tmp", "x", ".."))
+console.log("path-basename-trailing", path.basename("a/b/"))
+console.log("path-dirname-relative", path.dirname("file.txt"))
+console.log("path-root", path.normalize("/"), path.dirname("/"), path.basename("/"))
+console.log("path-join-absolute-segment", path.join("a", "/b"), path.join("/a", "/b"))

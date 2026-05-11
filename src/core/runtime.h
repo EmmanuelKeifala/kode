@@ -7,6 +7,7 @@
 #include <fstream>
 #include <unordered_map>
 #include <mutex>
+#include <vector>
 #include <uv.h>
 
 // Include our modular components
@@ -35,6 +36,9 @@ private:
     uv_loop_t* loop;
     std::map<std::string, std::function<void()>> builtins;
     std::unique_ptr<ConcurrencyRuntime> concurrency_runtime;
+    std::string executable_;
+    std::string script_;
+    std::vector<std::string> args_;
     // Named channels for JS API
     std::unordered_map<std::string, std::shared_ptr<Channel<std::string>>> channels_;
     std::mutex channels_mutex_;
@@ -43,6 +47,7 @@ public:
     KodeRuntime();
     
     // Core runtime lifecycle
+    void SetInvocation(const std::string& executable, const std::string& script, const std::vector<std::string>& args);
     bool Initialize();
     void Shutdown();
     

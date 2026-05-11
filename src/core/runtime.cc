@@ -14,6 +14,12 @@ KodeRuntime::KodeRuntime() {
     concurrency_runtime = std::make_unique<ConcurrencyRuntime>();
 }
 
+void KodeRuntime::SetInvocation(const std::string& executable, const std::string& script, const std::vector<std::string>& args) {
+        executable_ = executable;
+        script_ = script;
+        args_ = args;
+}
+
 void KodeRuntime::setupBuiltins() {
     // In a real runtime, these would be more complex
     // For now, we're just learning the concepts
@@ -40,6 +46,7 @@ bool KodeRuntime::Initialize() {
         }
         std::string v8err;
         if (!v8_disabled && kode::v8embed::available()) {
+            kode::v8embed::setRuntimeOptions({executable_, script_, args_});
             if (!kode::v8embed::initialize(&v8err)) {
                 std::cerr << "V8 init failed: " << v8err << std::endl;
             }
@@ -93,37 +100,29 @@ void KodeRuntime::setTimeout(const std::string& message, int delay_ms) {
         std::cout << "Timer set for " << delay_ms << "ms: " << message << std::endl;
 }
     
-    // JavaScript executor using our parser
-    // This parses JavaScript-like syntax and executes it
 bool KodeRuntime::ExecuteString(const std::string& source, const std::string& filename) {
-        // Prefer V8 when available; allow disabling with KODE_USE_V8=0
-        bool v8_disabled = false;
         if (const char* env = std::getenv("KODE_USE_V8")) {
-            if (std::string(env) == "0") v8_disabled = true;
-        }
-        if (!v8_disabled && kode::v8embed::available()) {
-            std::string err;
-            std::string result = kode::v8embed::runScript(source, filename, &err);
-            if (!err.empty()) {
-                std::cerr << "[V8] Error: " << err << std::endl;
-                // Fall back to parser below
-            } else {
-                if (!result.empty()) {
-                    std::cout << result << std::endl;
-                }
-                return true;
+            if (std::string(env) == "0") {
+                std::cerr << "V8 is required for JavaScript execution" << std::endl;
+                return false;
             }
         }
-        // Fallback to simple parser pipeline
-        std::vector<KodeParser::Statement> statements = KodeParser::Parse(source);
-        if (statements.empty()) {
-            return true;
+
+        if (!kode::v8embed::available()) {
+            std::cerr << "V8 is required for JavaScript execution" << std::endl;
+            return false;
         }
-        bool success = true;
-        for (const auto& stmt : statements) {
-            if (!ExecuteStatement(stmt)) success = false;
+
+        std::string err;
+        std::string result = kode::v8embed::runScript(source, filename, &err);
+        if (!err.empty()) {
+            std::cerr << "[V8] Error: " << err << std::endl;
+            return false;
         }
-        return success;
+        if (!result.empty()) {
+            std::cout << result << std::endl;
+        }
+        return true;
 }
     
     // Execute a single parsed statement
