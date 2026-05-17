@@ -57,7 +57,7 @@ test-v8-microtask:
 test-structured-runtime: build
 	output="$$(./bin/kode tests/structured_scope_success.js)"; case "$$output" in *"alpha beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/structured_scope_failure.js)"; case "$$output" in *"caught boom"*"cancelled ECANCELED scope.async"*) case "$$output" in *"should-not-run"*) printf '%s\n' "$$output"; exit 1;; *) ;; esac ;; *) printf '%s\n' "$$output"; exit 1; esac
-	output="$$(./bin/kode tests/kode_fs_read_text_success.js)"; case "$$output" in *"Kode Runtime"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_fs_read_text_success.js)"; case "$$output" in *"Kode is an experimental JavaScript runtime"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_read_text_missing.js)"; case "$$output" in *"ENOENT fs.readText tests/does-not-exist.txt"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/structured_scope_diagnostics.js)"; case "$$output" in *"during true"*"done"*"after 0 0 0"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_fs_native_read.js)"; case "$$output" in *"read true file text/markdown"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
