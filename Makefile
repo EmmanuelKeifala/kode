@@ -10,7 +10,7 @@ define INCLUDEUV
 endef
 
 define APP
-	src/main.cc src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc src/concurrency/task.cc src/v8/engine.cc src/v8/v8_helpers.cc src/v8/builtins/path.cc src/v8/builtins/fs.cc src/v8/kode_host.cc src/v8/module_loader.cc
+	src/main.cc src/core/runtime.cc src/filesystem/fs.cc src/filesystem/modern_fs.cc src/parser/parser.cc src/concurrency/task.cc src/v8/engine.cc src/v8/v8_helpers.cc src/v8/builtins/path.cc src/v8/builtins/fs.cc src/v8/builtins/crypto.cc src/v8/kode_host.cc src/v8/module_loader.cc
 endef
  
 define OBJ
@@ -84,6 +84,9 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/modules/app_module_runtime_error.js 2>&1 || true)"; case "$$output" in *"runtime_error.js:1"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_path_basic.js)"; case "$$output" in *"path-join a/b/c.txt"*"path-normalize b/c.txt"*"path-dir-base a/b c.txt"*"path-ext-abs .txt true"*"path-normalize-parent a"*"path-resolve-parent /tmp"*"path-basename-trailing b"*"path-dirname-relative ."*"path-root / / /"*"path-join-absolute-segment a/b /a/b"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_path_no_bare_alias.js)"; case "$$output" in *"path-no-bare EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_crypto_hash_sha256.js)"; case "$$output" in *"crypto-sha256 sha256 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_crypto_hash_unsupported.js)"; case "$$output" in *"crypto-unsupported EUNSUPPORTED_ALGORITHM kode:crypto.hash"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_crypto_no_bare_alias.js)"; case "$$output" in *"crypto-no-bare EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(env KODE_ENV_TEST=hello '__proto__=sentinel' ./bin/kode tests/kode_env_basic.js)"; case "$$output" in *"env-has true"*"env-get hello"*"env-missing true"*"env-object hello"*"env-frozen true true"*"env-proto true sentinel"*"kode-global-protected function true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_args_basic.js alpha beta)"; case "$$output" in *"args-script true"*"args-values alpha,beta"*"args-frozen true true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode -e 'console.log("args-e", Kode.args.script === undefined, Kode.args.values.join(","))' alpha beta)"; case "$$output" in *"args-e true alpha,beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac

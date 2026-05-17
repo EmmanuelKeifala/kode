@@ -1,5 +1,6 @@
 #include "module_loader.h"
 
+#include "builtins/crypto.h"
 #include "builtins/fs.h"
 #include "builtins/path.h"
 #include "v8_helpers.h"
@@ -150,6 +151,8 @@ void RequireCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     
     if (moduleName == "kode:path") {
         args.GetReturnValue().Set(CreatePathModule(isolate, context));
+    } else if (moduleName == "kode:crypto") {
+        args.GetReturnValue().Set(CreateCryptoModule(isolate, context));
     } else if (moduleName == "fs" || moduleName == "kode:fs") {
         args.GetReturnValue().Set(CreateFsModule(isolate, context));
     } else if (IsLocalSpecifier(moduleName)) {
