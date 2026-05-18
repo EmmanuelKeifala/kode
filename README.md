@@ -32,8 +32,11 @@ Current runtime capabilities:
 - Use `require("kode:fs")` for Kode-native filesystem operations.
 - Use `require("kode:path")` for pure path manipulation.
 - Use `require("kode:crypto")` for small Kode-native crypto primitives.
+- Use `require("kode:encoding")` for UTF-8 text encoding helpers.
 - Use `Kode.scope(fn)` and `scope.async(fn)` for structured async ownership.
 - Use `Kode.timeout(ms)` for cancellation signals.
+- Use `Kode.text.encode` and `Kode.text.decode` for global UTF-8 text helpers.
+- Use global `TextEncoder` and `TextDecoder` UTF-8 wrappers.
 - Read startup environment through read-only `Kode.env`.
 - Read invocation data through read-only `Kode.args`.
 - Verify core behavior with Makefile smoke tests.
@@ -134,6 +137,18 @@ console.log(digest.hex)
 
 Kode intentionally exposes `kode:crypto`, not a bare Node-compatible `crypto` module. The current crypto surface is deliberately small while Kode's byte and encoding APIs evolve.
 
+### Text Encoding
+
+```js
+const encoding = require("kode:encoding")
+
+const bytes = encoding.encodeUtf8("hello")
+console.log(bytes instanceof Uint8Array)
+console.log(encoding.decodeUtf8(bytes))
+```
+
+`Kode.text.encode` / `Kode.text.decode` provide the same UTF-8 behavior as global runtime helpers, while `TextEncoder` and `TextDecoder` provide small Web-style wrappers. Kode supports UTF-8 only in this slice and does not expose Node `Buffer`.
+
 ### Structured Async Scope
 
 ```js
@@ -222,6 +237,15 @@ Current crypto surface:
 
 `data` is currently a JavaScript string. Kode hashes the UTF-8 bytes and returns a lowercase hexadecimal SHA-256 digest. Unsupported algorithms throw structured errors with `code: "EUNSUPPORTED_ALGORITHM"` and `operation: "kode:crypto.hash"`.
 
+### `require("kode:encoding")`
+
+Current encoding surface:
+
+- `encodeUtf8(text) -> Uint8Array`
+- `decodeUtf8(bytes) -> string`
+
+Kode supports UTF-8 only here. It uses `Uint8Array` for bytes and does not expose Node `Buffer`.
+
 ### `Kode`
 
 Current runtime surface:
@@ -236,8 +260,19 @@ Current runtime surface:
 - `Kode.args.executable`
 - `Kode.args.script`
 - `Kode.args.values`
+- `Kode.text.encode(text) -> Uint8Array`
+- `Kode.text.decode(bytes) -> string`
 
-`Kode`, `Kode.env`, `Kode.args`, and `Kode.args.values` are protected against accidental replacement from JavaScript.
+`Kode`, `Kode.env`, `Kode.args`, `Kode.args.values`, and `Kode.text` are protected against accidental replacement from JavaScript.
+
+### Global Text Encoding
+
+Current global text encoding surface:
+
+- `new TextEncoder().encode(text) -> Uint8Array`
+- `new TextDecoder().decode(bytes) -> string`
+
+These are small Web-style UTF-8 wrappers. Other encodings are not supported.
 
 ## Architecture
 
@@ -255,6 +290,7 @@ src/
     builtins/fs.*         kode:fs bindings
     builtins/path.*       kode:path bindings
     builtins/crypto.*     kode:crypto bindings
+    builtins/encoding.*   kode:encoding, Kode.text, TextEncoder, TextDecoder bindings
   filesystem/             ModernFS and legacy filesystem internals
   concurrency/            Cooperative task/concurrency experiments
   http/                   Native HTTP server experiments
