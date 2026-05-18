@@ -1,5 +1,6 @@
 #include "kode_host.h"
 
+#include "builtins/encoding.h"
 #include "v8_helpers.h"
 
 #include <unordered_map>
@@ -82,6 +83,7 @@ bool InstallKodeHostApis(v8::Isolate* isolate,
     args->Set(context, V8String(isolate, "values"), values).FromMaybe(false);
     FreezeValue(context, args);
     kode->Set(context, V8String(isolate, "args"), args).FromMaybe(false);
+    if (!InstallKodeTextApi(isolate, context, kode)) return false;
     FreezeValue(context, kode);
     if (!context->Global()
             ->DefineOwnProperty(context, V8String(isolate, "Kode"), kode,

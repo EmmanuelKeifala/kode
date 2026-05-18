@@ -5,84 +5,106 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace kode { namespace v8embed {
 
 namespace {
 
-bool ReadBytesArg(v8::Isolate* isolate,
-                  v8::Local<v8::Context> context,
-                  const v8::FunctionCallbackInfo<v8::Value>& args,
-                  int index,
-                  const std::string& operation,
-                  const uint8_t** data,
-                  size_t* length) {
-    if (args.Length() <= index) {
-        isolate->ThrowException(CreateKodeError(isolate, context,
-            "EINVAL", "Missing byte input", operation, ""));
-        return false;
-    }
+bool ReadByteInput(v8::Isolate* isolate,
+                   v8::Local<v8::Context> context,
+                   v8::Local<v8::Value> value,
+                   const std::string& operation,
+                   std::vector<uint8_t>* bytes) {
+    const uint8_t* data = nullptr;
+    size_t length = 0;
 
-    v8::Local<v8::Value> value = args[index];
     if (value->IsUint8Array() || value->IsDataView()) {
         v8::Local<v8::ArrayBufferView> view = value.As<v8::ArrayBufferView>();
         std::shared_ptr<v8::BackingStore> backing = view->Buffer()->GetBackingStore();
-        *data = static_cast<const uint8_t*>(backing->Data()) + view->ByteOffset();
-        *length = view->ByteLength();
-        return true;
-    }
-
-    if (value->IsArrayBuffer()) {
+        data = static_cast<const uint8_t*>(backing->Data()) + view->ByteOffset();
+        length = view->ByteLength();
+    } else if (value->IsArrayBuffer()) {
         std::shared_ptr<v8::BackingStore> backing = value.As<v8::ArrayBuffer>()->GetBackingStore();
-        *data = static_cast<const uint8_t*>(backing->Data());
-        *length = backing->ByteLength();
-        return true;
+        data = static_cast<const uint8_t*>(backing->Data());
+        length = backing->ByteLength();
+    } else {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "Expected Uint8Array, ArrayBuffer, or DataView", operation, ""));
+        return false;
     }
 
-    isolate->ThrowException(CreateKodeError(isolate, context,
-        "EINVAL", "Expected Uint8Array, ArrayBuffer, or DataView", operation, ""));
-    return false;
+    if (length == 0) {
+        bytes->clear();
+    } else {
+        bytes->assign(data, data + length);
+    }
+    return true;
 }
 
-v8::Local<v8::Uint8Array> NewUint8Array(v8::Isolate* isolate, const std::string& bytes) {
-    v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, bytes.size());
-    if (!bytes.empty()) {
+v8::Local<v8::Uint8Array> EncodeUtf8(v8::Isolate* isolate,
+                                     v8::Local<v8::Context> context,
+                                     const std::string& text) {
+    v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, text.size());
+    if (!text.empty()) {
         std::shared_ptr<v8::BackingStore> backing = buffer->GetBackingStore();
-        std::memcpy(backing->Data(), bytes.data(), bytes.size());
+        std::memcpy(backing->Data(), text.data(), text.size());
     }
-    return v8::Uint8Array::New(buffer, 0, bytes.size());
+    return v8::Uint8Array::New(buffer, 0, text.size());
 }
 
-void EncodeUtf8Callback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+void EncodeWithOperation(const v8::FunctionCallbackInfo<v8::Value>& args, const std::string& operation) {
     v8::Isolate* isolate = args.GetIsolate();
     v8::HandleScope handle_scope(isolate);
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
 
-    std::string input;
-    if (!ReadStringArg(isolate, context, args, 0, "kode:encoding.encodeUtf8", &input)) return;
+    std::string text;
+    if (!ReadStringArg(isolate, context, args, 0, operation, &text)) return;
 
-    args.GetReturnValue().Set(NewUint8Array(isolate, input));
+    args.GetReturnValue().Set(EncodeUtf8(isolate, context, text));
 }
 
-void DecodeUtf8Callback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+void DecodeWithOperation(const v8::FunctionCallbackInfo<v8::Value>& args, const std::string& operation) {
     v8::Isolate* isolate = args.GetIsolate();
     v8::HandleScope handle_scope(isolate);
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
 
-    const uint8_t* data = nullptr;
-    size_t length = 0;
-    if (!ReadBytesArg(isolate, context, args, 0, "kode:encoding.decodeUtf8", &data, &length)) return;
+    if (args.Length() < 1) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "Missing byte input", operation, ""));
+        return;
+    }
+
+    std::vector<uint8_t> bytes;
+    if (!ReadByteInput(isolate, context, args[0], operation, &bytes)) return;
 
     v8::Local<v8::String> decoded;
+    const char* data = bytes.empty() ? "" : reinterpret_cast<const char*>(bytes.data());
     if (!v8::String::NewFromUtf8(isolate,
-                                 reinterpret_cast<const char*>(data),
+                                 data,
                                  v8::NewStringType::kNormal,
-                                 static_cast<int>(length)).ToLocal(&decoded)) {
+                                 static_cast<int>(bytes.size())).ToLocal(&decoded)) {
         isolate->ThrowException(CreateKodeError(isolate, context,
-            "EINVAL", "Invalid UTF-8 input", "kode:encoding.decodeUtf8", ""));
+            "EINVAL", "Invalid UTF-8 input", operation, ""));
         return;
     }
     args.GetReturnValue().Set(decoded);
+}
+
+void EncodeUtf8Callback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    EncodeWithOperation(args, "kode:encoding.encodeUtf8");
+}
+
+void DecodeUtf8Callback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    DecodeWithOperation(args, "kode:encoding.decodeUtf8");
+}
+
+void KodeTextEncodeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    EncodeWithOperation(args, "Kode.text.encode");
+}
+
+void KodeTextDecodeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    DecodeWithOperation(args, "Kode.text.decode");
 }
 
 } // namespace
@@ -99,7 +121,11 @@ bool InstallTextEncodingGlobals(v8::Isolate* isolate, v8::Local<v8::Context> con
 }
 
 bool InstallKodeTextApi(v8::Isolate* isolate, v8::Local<v8::Context> context, v8::Local<v8::Object> kode) {
-    return true;
+    v8::Local<v8::Object> text = v8::Object::New(isolate);
+    text->Set(context, V8String(isolate, "encode"), v8::Function::New(context, KodeTextEncodeCallback).ToLocalChecked()).FromMaybe(false);
+    text->Set(context, V8String(isolate, "decode"), v8::Function::New(context, KodeTextDecodeCallback).ToLocalChecked()).FromMaybe(false);
+    FreezeValue(context, text);
+    return kode->Set(context, V8String(isolate, "text"), text).FromMaybe(false);
 }
 
 } } // namespace kode::v8embed
