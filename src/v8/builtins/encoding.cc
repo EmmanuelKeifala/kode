@@ -107,6 +107,42 @@ void KodeTextDecodeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     DecodeWithOperation(args, "Kode.text.decode");
 }
 
+void TextEncoderConstructor(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    if (!args.IsConstructCall()) {
+        v8::Isolate* isolate = args.GetIsolate();
+        v8::Local<v8::Context> context = isolate->GetCurrentContext();
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "TextEncoder requires new", "TextEncoder", ""));
+    }
+}
+
+void TextDecoderConstructor(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    if (!args.IsConstructCall()) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "TextDecoder requires new", "TextDecoder", ""));
+        return;
+    }
+    if (args.Length() > 0 && !args[0]->IsUndefined()) {
+        std::string label;
+        if (!ReadStringArg(isolate, context, args, 0, "TextDecoder", &label)) return;
+        if (label != "utf-8" && label != "utf8") {
+            isolate->ThrowException(CreateKodeError(isolate, context,
+                "EUNSUPPORTED_ENCODING", "Unsupported encoding '" + label + "'", "TextDecoder", label));
+        }
+    }
+}
+
+void TextEncoderEncodeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    EncodeWithOperation(args, "TextEncoder.encode");
+}
+
+void TextDecoderDecodeCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    DecodeWithOperation(args, "TextDecoder.decode");
+}
+
 } // namespace
 
 v8::Local<v8::Object> CreateEncodingModule(v8::Isolate* isolate, v8::Local<v8::Context> context) {
@@ -117,7 +153,21 @@ v8::Local<v8::Object> CreateEncodingModule(v8::Isolate* isolate, v8::Local<v8::C
 }
 
 bool InstallTextEncodingGlobals(v8::Isolate* isolate, v8::Local<v8::Context> context) {
-    return true;
+    v8::Local<v8::FunctionTemplate> encoder_template = v8::FunctionTemplate::New(isolate, TextEncoderConstructor);
+    encoder_template->SetClassName(V8String(isolate, "TextEncoder"));
+    encoder_template->InstanceTemplate()->SetInternalFieldCount(0);
+    encoder_template->PrototypeTemplate()->Set(isolate, "encode", v8::FunctionTemplate::New(isolate, TextEncoderEncodeCallback));
+    v8::Local<v8::Function> encoder;
+    if (!encoder_template->GetFunction(context).ToLocal(&encoder)) return false;
+    if (!context->Global()->Set(context, V8String(isolate, "TextEncoder"), encoder).FromMaybe(false)) return false;
+
+    v8::Local<v8::FunctionTemplate> decoder_template = v8::FunctionTemplate::New(isolate, TextDecoderConstructor);
+    decoder_template->SetClassName(V8String(isolate, "TextDecoder"));
+    decoder_template->InstanceTemplate()->SetInternalFieldCount(0);
+    decoder_template->PrototypeTemplate()->Set(isolate, "decode", v8::FunctionTemplate::New(isolate, TextDecoderDecodeCallback));
+    v8::Local<v8::Function> decoder;
+    if (!decoder_template->GetFunction(context).ToLocal(&decoder)) return false;
+    return context->Global()->Set(context, V8String(isolate, "TextDecoder"), decoder).FromMaybe(false);
 }
 
 bool InstallKodeTextApi(v8::Isolate* isolate, v8::Local<v8::Context> context, v8::Local<v8::Object> kode) {

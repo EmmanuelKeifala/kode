@@ -84,6 +84,7 @@ bool InstallKodeHostApis(v8::Isolate* isolate,
     FreezeValue(context, args);
     kode->Set(context, V8String(isolate, "args"), args).FromMaybe(false);
     if (!InstallKodeTextApi(isolate, context, kode)) return false;
+    if (!InstallTextEncodingGlobals(isolate, context)) return false;
     FreezeValue(context, kode);
     if (!context->Global()
             ->DefineOwnProperty(context, V8String(isolate, "Kode"), kode,
