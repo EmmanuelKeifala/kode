@@ -90,6 +90,7 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/kode_encoding_basic.js)"; case "$$output" in *"encoding-basic true 5 104 101 108 108 111 hello"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_encoding_unicode.js)"; case "$$output" in *"encoding-unicode true 8 true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_encoding_no_bare_alias.js)"; case "$$output" in *"encoding-no-bare EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_encoding_rejects_non_byte_view.js)"; case "$$output" in *"encoding-non-byte-view EINVAL kode:encoding.decodeUtf8"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(env KODE_ENV_TEST=hello '__proto__=sentinel' ./bin/kode tests/kode_env_basic.js)"; case "$$output" in *"env-has true"*"env-get hello"*"env-missing true"*"env-object hello"*"env-frozen true true"*"env-proto true sentinel"*"kode-global-protected function true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_args_basic.js alpha beta)"; case "$$output" in *"args-script true"*"args-values alpha,beta"*"args-frozen true true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode -e 'console.log("args-e", Kode.args.script === undefined, Kode.args.values.join(","))' alpha beta)"; case "$$output" in *"args-e true alpha,beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac

@@ -24,7 +24,7 @@ bool ReadBytesArg(v8::Isolate* isolate,
     }
 
     v8::Local<v8::Value> value = args[index];
-    if (value->IsArrayBufferView()) {
+    if (value->IsUint8Array() || value->IsDataView()) {
         v8::Local<v8::ArrayBufferView> view = value.As<v8::ArrayBufferView>();
         std::shared_ptr<v8::BackingStore> backing = view->Buffer()->GetBackingStore();
         *data = static_cast<const uint8_t*>(backing->Data()) + view->ByteOffset();
