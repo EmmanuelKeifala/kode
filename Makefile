@@ -91,6 +91,7 @@ test-structured-runtime: build
 	output="$$(./bin/kode tests/kode_text_basic.js)"; case "$$output" in *"kode-text true true hello"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/text_encoder_decoder_basic.js)"; case "$$output" in *"text-encoder-decoder true 5 104 111 hello"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/text_decoder_unsupported_label.js)"; case "$$output" in *"text-decoder-label EUNSUPPORTED_ENCODING TextDecoder"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/text_decoder_utf8_labels.js)"; case "$$output" in *"text-decoder-labels hi hi"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_encoding_unicode.js)"; case "$$output" in *"encoding-unicode true 8 true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_encoding_no_bare_alias.js)"; case "$$output" in *"encoding-no-bare EUNSUPPORTED_MODULE module.require"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/kode_encoding_rejects_non_byte_view.js)"; case "$$output" in *"encoding-non-byte-view EINVAL kode:encoding.decodeUtf8"*) ;; *) printf '%s\n' "$$output"; exit 1; esac

@@ -43,14 +43,21 @@ bool ReadByteInput(v8::Isolate* isolate,
 }
 
 v8::Local<v8::Uint8Array> EncodeUtf8(v8::Isolate* isolate,
-                                     v8::Local<v8::Context> context,
-                                     const std::string& text) {
+                                      v8::Local<v8::Context> context,
+                                      const std::string& text) {
     v8::Local<v8::ArrayBuffer> buffer = v8::ArrayBuffer::New(isolate, text.size());
     if (!text.empty()) {
         std::shared_ptr<v8::BackingStore> backing = buffer->GetBackingStore();
         std::memcpy(backing->Data(), text.data(), text.size());
     }
     return v8::Uint8Array::New(buffer, 0, text.size());
+}
+
+std::string AsciiLowercase(std::string value) {
+    for (char& ch : value) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    return value;
 }
 
 void EncodeWithOperation(const v8::FunctionCallbackInfo<v8::Value>& args, const std::string& operation) {
@@ -128,7 +135,8 @@ void TextDecoderConstructor(const v8::FunctionCallbackInfo<v8::Value>& args) {
     if (args.Length() > 0 && !args[0]->IsUndefined()) {
         std::string label;
         if (!ReadStringArg(isolate, context, args, 0, "TextDecoder", &label)) return;
-        if (label != "utf-8" && label != "utf8") {
+        std::string normalized_label = AsciiLowercase(label);
+        if (normalized_label != "utf-8" && normalized_label != "utf8") {
             isolate->ThrowException(CreateKodeError(isolate, context,
                 "EUNSUPPORTED_ENCODING", "Unsupported encoding '" + label + "'", "TextDecoder", label));
         }
