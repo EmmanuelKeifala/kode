@@ -1,10 +1,48 @@
+# Build outputs
 bin/
-.worktrees/
-v8/*
-!v8/include
+build/
+out/
+tmp/
 
+# Local worktrees
+.worktrees/
+
+# Local planning notes
+ROADMAP.md
+docs/superpowers/
+
+# Vendored/generated dependency artifacts. Keep checked-in public headers.
+v8/*
+!v8/include/
+!v8/include/**
 libuv/*
-!libuv/uv
+!libuv/uv/
+!libuv/uv/**
 !libuv/uv.h
 
-*.md
+# Compiler/linker output
+*.a
+*.d
+*.dSYM/
+*.o
+*.so
+*.so.*
+
+# Logs and diagnostics
+*.log
+core
+core.*
+
+# Editor and OS noise
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Tool caches
+.cache/
+.ccache/
+.pytest_cache/
+compile_commands.json
