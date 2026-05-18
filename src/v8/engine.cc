@@ -165,6 +165,25 @@ std::string runScript(const std::string& code, const std::string& filename, std:
 
     g_isolate->PerformMicrotaskCheckpoint();
 
+    if (result->IsPromise()) {
+        v8::Local<v8::Promise> promise = result.As<v8::Promise>();
+        if (promise->State() == v8::Promise::kRejected) {
+            v8::String::Utf8Value utf8(g_isolate, promise->Result());
+            if (error_out) {
+                *error_out = utf8.length() ? std::string(*utf8, utf8.length()) : "Promise rejected";
+            }
+            return std::string();
+        }
+        if (promise->State() == v8::Promise::kFulfilled) {
+            v8::Local<v8::Value> promise_result = promise->Result();
+            if (promise_result->IsUndefined()) return std::string();
+            v8::String::Utf8Value utf8(g_isolate, promise_result);
+            if (*utf8) return std::string(*utf8, utf8.length());
+            return std::string();
+        }
+        return std::string();
+    }
+
     v8::String::Utf8Value utf8(g_isolate, result);
     if (*utf8) return std::string(*utf8, utf8.length());
     return std::string();
