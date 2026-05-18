@@ -4,7 +4,7 @@ Kode is an experimental JavaScript runtime built on V8 and libuv.
 
 It is not trying to be a Node.js clone. Kode uses the same proven foundations for JavaScript execution and async I/O, but explores a smaller, more explicit runtime surface: Kode-native host modules, structured async ownership, clear cancellation, and predictable error objects.
 
-The project is early, but it already runs real JavaScript through V8, supports local CommonJS modules, exposes Kode-native filesystem/path APIs, and has smoke tests for the runtime behavior that exists today.
+The project is early, but it already runs real JavaScript through V8, supports local CommonJS modules, exposes Kode-native filesystem/path/crypto APIs, and has smoke tests for the runtime behavior that exists today.
 
 ## Why Kode Exists
 
@@ -31,6 +31,7 @@ Current runtime capabilities:
 - Handle circular CommonJS dependencies, including partial exports.
 - Use `require("kode:fs")` for Kode-native filesystem operations.
 - Use `require("kode:path")` for pure path manipulation.
+- Use `require("kode:crypto")` for small Kode-native crypto primitives.
 - Use `Kode.scope(fn)` and `scope.async(fn)` for structured async ownership.
 - Use `Kode.timeout(ms)` for cancellation signals.
 - Read startup environment through read-only `Kode.env`.
@@ -121,6 +122,18 @@ console.log(path.basename("src/v8/engine.cc"))
 
 Kode intentionally exposes `kode:path`, not a bare Node-compatible `path` module.
 
+### Crypto Hashing
+
+```js
+const crypto = require("kode:crypto")
+
+const digest = crypto.hash("sha256", "hello")
+console.log(digest.algorithm)
+console.log(digest.hex)
+```
+
+Kode intentionally exposes `kode:crypto`, not a bare Node-compatible `crypto` module. The current crypto surface is deliberately small while Kode's byte and encoding APIs evolve.
+
 ### Structured Async Scope
 
 ```js
@@ -201,6 +214,14 @@ Current path surface:
 
 These are string/path transformations only. They do not check whether files exist.
 
+### `require("kode:crypto")`
+
+Current crypto surface:
+
+- `hash("sha256", data) -> { algorithm, hex }`
+
+`data` is currently a JavaScript string. Kode hashes the UTF-8 bytes and returns a lowercase hexadecimal SHA-256 digest. Unsupported algorithms throw structured errors with `code: "EUNSUPPORTED_ALGORITHM"` and `operation: "kode:crypto.hash"`.
+
 ### `Kode`
 
 Current runtime surface:
@@ -233,6 +254,7 @@ src/
     v8_helpers.*          Shared V8 helpers and error formatting
     builtins/fs.*         kode:fs bindings
     builtins/path.*       kode:path bindings
+    builtins/crypto.*     kode:crypto bindings
   filesystem/             ModernFS and legacy filesystem internals
   concurrency/            Cooperative task/concurrency experiments
   http/                   Native HTTP server experiments
@@ -280,7 +302,8 @@ Current limitations:
 
 Near-term runtime work:
 
-- `kode:crypto` basics.
+- Byte and encoding primitives to support future binary APIs.
+- More `kode:crypto` primitives once byte handling is clearer.
 - HTTP client APIs.
 - File watchers.
 - More robust cancellation for active host operations.
