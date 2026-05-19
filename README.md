@@ -34,6 +34,7 @@ Current runtime capabilities:
 - Use `require("kode:crypto")` for small Kode-native crypto primitives.
 - Use `require("kode:encoding")` for UTF-8 text encoding helpers.
 - Use `Kode.scope(fn)` and `scope.async(fn)` for structured async ownership.
+- Use `Kode.sleep(ms)` for promise-first timer delays.
 - Use `Kode.timeout(ms)` for cancellation signals.
 - Use `Kode.text.encode` and `Kode.text.decode` for global UTF-8 text helpers.
 - Use global `TextEncoder` and `TextDecoder` UTF-8 wrappers.
@@ -166,6 +167,20 @@ Kode.scope(async (scope) => {
 console.log(Kode.activeOperations())
 ```
 
+Delay scoped work with `Kode.sleep`:
+
+```js
+Kode.scope(async (scope) => {
+  const first = scope.async(async () => {
+    await Kode.sleep(1000)
+    return "alpha"
+  })
+
+  const second = scope.async(async () => "beta")
+  console.log(await first, await second)
+})
+```
+
 ### Cancellation
 
 ```js
@@ -182,6 +197,8 @@ Kode.scope(async (scope) => {
 ```
 
 Cancellation currently rejects work that sees an already-aborted signal. It does not forcibly stop libuv threadpool work that has already started.
+
+`Kode.timeout(ms)` creates cancellation signals. `Kode.sleep(ms)` schedules a delay and can reject immediately when passed an already-aborted signal.
 
 ### Environment And Arguments
 
@@ -253,6 +270,7 @@ Current runtime surface:
 - `Kode.scope(fn)`
 - `scope.async(fn)` inside a scope
 - `Kode.activeOperations()`
+- `Kode.sleep(ms, { signal? })`
 - `Kode.timeout(ms)`
 - `Kode.env.get(name)`
 - `Kode.env.has(name)`
