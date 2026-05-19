@@ -47,6 +47,7 @@ bool KodeRuntime::Initialize() {
         std::string v8err;
         if (!v8_disabled && kode::v8embed::available()) {
             kode::v8embed::setRuntimeOptions({executable_, script_, args_});
+            kode::v8embed::setEventLoop(loop);
             if (!kode::v8embed::initialize(&v8err)) {
                 std::cerr << "V8 init failed: " << v8err << std::endl;
             }

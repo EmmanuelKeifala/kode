@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <uv.h>
 
 namespace kode {
 namespace v8embed {
@@ -17,6 +18,8 @@ struct RuntimeOptions {
 };
 
 void setRuntimeOptions(const RuntimeOptions& options);
+void setEventLoop(uv_loop_t* loop);
+uv_loop_t* eventLoop();
 std::string runScript(const std::string& code, const std::string& filename = "<eval>", std::string* error_out = nullptr);
 
 } // namespace v8embed

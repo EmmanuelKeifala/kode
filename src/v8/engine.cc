@@ -8,6 +8,8 @@ bool available() { return false; }
 bool initialize(std::string* /*error_out*/) { return false; }
 void shutdown() {}
 void setRuntimeOptions(const RuntimeOptions& /*options*/) {}
+void setEventLoop(uv_loop_t*) {}
+uv_loop_t* eventLoop() { return nullptr; }
 std::string runScript(const std::string& /*code*/, const std::string& /*filename*/, std::string* error_out) {
     if (error_out) *error_out = "V8 not available (build without KODE_WITH_V8)";
     return std::string();
@@ -33,6 +35,7 @@ static v8::Isolate* g_isolate = nullptr;
 static v8::ArrayBuffer::Allocator* g_allocator = nullptr;
 static v8::Global<v8::Context> g_context;
 static RuntimeOptions g_runtime_options;
+static uv_loop_t* g_loop = nullptr;
 
 // Console.log implementation
 void ConsoleLogCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -51,6 +54,14 @@ bool available() { return true; }
 
 void setRuntimeOptions(const RuntimeOptions& options) {
     g_runtime_options = options;
+}
+
+void setEventLoop(uv_loop_t* loop) {
+    g_loop = loop;
+}
+
+uv_loop_t* eventLoop() {
+    return g_loop;
 }
 
 bool initialize(std::string* error_out) {
@@ -109,6 +120,7 @@ void shutdown() {
     if (!g_isolate) return;
     ClearModuleCache();
     ClearKodeHostState();
+    g_loop = nullptr;
     g_context.Reset(); // Release context
     g_isolate->Dispose();
     g_isolate = nullptr;
