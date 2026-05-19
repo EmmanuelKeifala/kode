@@ -1,15 +1,51 @@
 #include "kode_host.h"
 
 #include "builtins/encoding.h"
+#include "engine_iface.h"
 #include "v8_helpers.h"
 
 #include <unordered_map>
+#include <uv.h>
 
 extern char** environ;
 
 namespace kode { namespace v8embed {
 
 static std::unordered_map<std::string, std::string> g_env_snapshot;
+
+struct SleepReq {
+    uv_timer_t timer;
+    v8::Isolate* isolate = nullptr;
+    v8::Global<v8::Context> context;
+    v8::Global<v8::Promise::Resolver> resolver;
+    bool settled = false;
+};
+
+void CloseSleepReq(SleepReq* req) {
+    uv_timer_stop(&req->timer);
+    uv_close(reinterpret_cast<uv_handle_t*>(&req->timer), [](uv_handle_t* handle) {
+        SleepReq* req = static_cast<SleepReq*>(handle->data);
+        req->resolver.Reset();
+        req->context.Reset();
+        delete req;
+    });
+}
+
+void SleepTimerCallback(uv_timer_t* timer) {
+    SleepReq* req = static_cast<SleepReq*>(timer->data);
+    v8::Isolate* isolate = req->isolate;
+    v8::Isolate::Scope isolate_scope(isolate);
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = v8::Local<v8::Context>::New(isolate, req->context);
+    v8::Context::Scope context_scope(context);
+    v8::Local<v8::Promise::Resolver> resolver = v8::Local<v8::Promise::Resolver>::New(isolate, req->resolver);
+    if (!req->settled) {
+        req->settled = true;
+        ResolvePromise(context, resolver, v8::Undefined(isolate));
+        isolate->PerformMicrotaskCheckpoint();
+    }
+    CloseSleepReq(req);
+}
 
 void CaptureEnvironment() {
     g_env_snapshot.clear();
@@ -54,6 +90,39 @@ void EnvToObjectCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     args.GetReturnValue().Set(object);
 }
 
+void SleepCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::HandleScope handle_scope(isolate);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    if (args.Length() < 1 || !args[0]->IsNumber()) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "Kode.sleep requires a non-negative number", "Kode.sleep", ""));
+        return;
+    }
+    double ms = args[0].As<v8::Number>()->Value();
+    if (ms < 0) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINVAL", "Kode.sleep requires a non-negative number", "Kode.sleep", ""));
+        return;
+    }
+    uv_loop_t* loop = eventLoop();
+    if (!loop) {
+        isolate->ThrowException(CreateKodeError(isolate, context,
+            "EINTERNAL", "Runtime loop is not available", "Kode.sleep", ""));
+        return;
+    }
+
+    v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+    auto* req = new SleepReq();
+    req->isolate = isolate;
+    req->context.Reset(isolate, context);
+    req->resolver.Reset(isolate, resolver);
+    uv_timer_init(loop, &req->timer);
+    req->timer.data = req;
+    uv_timer_start(&req->timer, SleepTimerCallback, static_cast<uint64_t>(ms), 0);
+    args.GetReturnValue().Set(resolver->GetPromise());
+}
+
 bool InstallKodeHostApis(v8::Isolate* isolate,
                          v8::Local<v8::Context> context,
                          const RuntimeOptions& runtime_options) {
@@ -83,6 +152,7 @@ bool InstallKodeHostApis(v8::Isolate* isolate,
     args->Set(context, V8String(isolate, "values"), values).FromMaybe(false);
     FreezeValue(context, args);
     kode->Set(context, V8String(isolate, "args"), args).FromMaybe(false);
+    kode->Set(context, V8String(isolate, "sleep"), v8::Function::New(context, SleepCallback).ToLocalChecked()).FromMaybe(false);
     if (!InstallKodeTextApi(isolate, context, kode)) return false;
     if (!InstallTextEncodingGlobals(isolate, context)) return false;
     FreezeValue(context, kode);

@@ -56,6 +56,8 @@ test-v8-microtask:
 
 test-structured-runtime: build
 	output="$$(./bin/kode tests/structured_scope_success.js)"; case "$$output" in *"alpha beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_sleep_basic.js)"; case "$$output" in *"sleep-basic true"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
+	output="$$(./bin/kode tests/kode_sleep_scope.js)"; case "$$output" in *"[object Promise]"*) printf '%s\n' "$$output"; exit 1;; *"sleep-scope alpha beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/top_level_scope_no_promise_echo.js)"; case "$$output" in *"[object Promise]"*) printf '%s\n' "$$output"; exit 1;; *"top-level-scope alpha beta"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/top_level_promise_rejection.js 2>&1; printf ' status:%s' "$$?")"; case "$$output" in *"status:0"*) printf '%s\n' "$$output"; exit 1;; *"top-level boom"*) ;; *) printf '%s\n' "$$output"; exit 1; esac
 	output="$$(./bin/kode tests/structured_scope_failure.js)"; case "$$output" in *"caught boom"*"cancelled ECANCELED scope.async"*) case "$$output" in *"should-not-run"*) printf '%s\n' "$$output"; exit 1;; *) ;; esac ;; *) printf '%s\n' "$$output"; exit 1; esac
