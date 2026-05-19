@@ -47,6 +47,26 @@ void SleepTimerCallback(uv_timer_t* timer) {
     CloseSleepReq(req);
 }
 
+bool ReadSleepSignal(v8::Isolate* isolate,
+                     v8::Local<v8::Context> context,
+                     const v8::FunctionCallbackInfo<v8::Value>& args,
+                     v8::Local<v8::Object>* signal_out) {
+    if (args.Length() < 2 || args[1]->IsUndefined() || args[1]->IsNull()) return false;
+    if (!args[1]->IsObject()) return false;
+    v8::Local<v8::Object> options = args[1].As<v8::Object>();
+    v8::Local<v8::Value> signal;
+    if (!options->Get(context, V8String(isolate, "signal")).ToLocal(&signal)) return false;
+    if (!signal->IsObject()) return false;
+    *signal_out = signal.As<v8::Object>();
+    return true;
+}
+
+bool SignalAborted(v8::Isolate* isolate, v8::Local<v8::Context> context, v8::Local<v8::Object> signal) {
+    v8::Local<v8::Value> aborted;
+    if (!signal->Get(context, V8String(isolate, "aborted")).ToLocal(&aborted)) return false;
+    return aborted->BooleanValue(isolate);
+}
+
 void CaptureEnvironment() {
     g_env_snapshot.clear();
     for (char** current = environ; current && *current; ++current) {
@@ -113,6 +133,14 @@ void SleepCallback(const v8::FunctionCallbackInfo<v8::Value>& args) {
     }
 
     v8::Local<v8::Promise::Resolver> resolver = NewResolver(isolate, context);
+    v8::Local<v8::Object> signal;
+    if (ReadSleepSignal(isolate, context, args, &signal) && SignalAborted(isolate, context, signal)) {
+        RejectPromise(context, resolver, CreateKodeError(isolate, context,
+            "ECANCELED", "Sleep cancelled", "Kode.sleep", ""));
+        args.GetReturnValue().Set(resolver->GetPromise());
+        return;
+    }
+
     auto* req = new SleepReq();
     req->isolate = isolate;
     req->context.Reset(isolate, context);
