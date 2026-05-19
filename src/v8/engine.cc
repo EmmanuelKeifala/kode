@@ -27,6 +27,7 @@ std::string runScript(const std::string& /*code*/, const std::string& /*filename
 #include <libplatform/libplatform.h>
 #include <memory>
 #include <iostream>
+#include <uv.h>
 
 namespace kode { namespace v8embed {
 
@@ -62,6 +63,44 @@ void setEventLoop(uv_loop_t* loop) {
 
 uv_loop_t* eventLoop() {
     return g_loop;
+}
+
+std::string PromiseResultToString(v8::Isolate* isolate,
+                                  v8::Local<v8::Context> context,
+                                  v8::Local<v8::Value> value) {
+    if (value->IsUndefined()) return std::string();
+    v8::Context::Scope context_scope(context);
+    v8::String::Utf8Value utf8(isolate, value);
+    if (*utf8) return std::string(*utf8, utf8.length());
+    return std::string();
+}
+
+std::string ResolveTopLevelPromise(v8::Local<v8::Context> context,
+                                   v8::Local<v8::Value> result,
+                                   std::string* error_out) {
+    if (!result->IsPromise()) {
+        return PromiseResultToString(g_isolate, context, result);
+    }
+
+    v8::Local<v8::Promise> promise = result.As<v8::Promise>();
+    while (promise->State() == v8::Promise::kPending && g_loop && uv_loop_alive(g_loop)) {
+        uv_run(g_loop, UV_RUN_ONCE);
+        g_isolate->PerformMicrotaskCheckpoint();
+    }
+
+    if (promise->State() == v8::Promise::kRejected) {
+        if (error_out) {
+            std::string error = PromiseResultToString(g_isolate, context, promise->Result());
+            *error_out = error.empty() ? "Promise rejected" : error;
+        }
+        return std::string();
+    }
+    if (promise->State() == v8::Promise::kFulfilled) {
+        v8::Local<v8::Value> promise_result = promise->Result();
+        if (promise_result->IsUndefined()) return std::string();
+        return PromiseResultToString(g_isolate, context, promise_result);
+    }
+    return std::string();
 }
 
 bool initialize(std::string* error_out) {
@@ -147,58 +186,42 @@ std::string runScript(const std::string& code, const std::string& filename, std:
     
     // Use the persistent context
     v8::Local<v8::Context> context = v8::Local<v8::Context>::New(g_isolate, g_context);
-    v8::Context::Scope context_scope(context);
     SetModuleEntryDirectory(filename);
 
-    v8::TryCatch try_catch(g_isolate);
-    v8::Local<v8::String> source;
-    if (!v8::String::NewFromUtf8(g_isolate, code.c_str(), v8::NewStringType::kNormal).ToLocal(&source)) {
-        if (error_out) *error_out = "Failed to create V8 source string";
-        return std::string();
-    }
-
     const std::string normalized_filename = NormalizePath(filename);
-    v8::ScriptOrigin origin(V8String(g_isolate, normalized_filename));
-    v8::Local<v8::Script> script;
-    if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
-        if (error_out) {
-            *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
+    v8::Global<v8::Value> result_global;
+    {
+        v8::Context::Scope context_scope(context);
+        v8::TryCatch try_catch(g_isolate);
+        v8::Local<v8::String> source;
+        if (!v8::String::NewFromUtf8(g_isolate, code.c_str(), v8::NewStringType::kNormal).ToLocal(&source)) {
+            if (error_out) *error_out = "Failed to create V8 source string";
+            return std::string();
         }
-        return std::string();
-    }
 
-    v8::Local<v8::Value> result;
-    if (!script->Run(context).ToLocal(&result)) {
-        if (error_out) {
-            *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
-        }
-        return std::string();
-    }
-
-    g_isolate->PerformMicrotaskCheckpoint();
-
-    if (result->IsPromise()) {
-        v8::Local<v8::Promise> promise = result.As<v8::Promise>();
-        if (promise->State() == v8::Promise::kRejected) {
-            v8::String::Utf8Value utf8(g_isolate, promise->Result());
+        v8::ScriptOrigin origin(V8String(g_isolate, normalized_filename));
+        v8::Local<v8::Script> script;
+        if (!v8::Script::Compile(context, source, &origin).ToLocal(&script)) {
             if (error_out) {
-                *error_out = utf8.length() ? std::string(*utf8, utf8.length()) : "Promise rejected";
+                *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
             }
             return std::string();
         }
-        if (promise->State() == v8::Promise::kFulfilled) {
-            v8::Local<v8::Value> promise_result = promise->Result();
-            if (promise_result->IsUndefined()) return std::string();
-            v8::String::Utf8Value utf8(g_isolate, promise_result);
-            if (*utf8) return std::string(*utf8, utf8.length());
+
+        v8::Local<v8::Value> result;
+        if (!script->Run(context).ToLocal(&result)) {
+            if (error_out) {
+                *error_out = FormatTryCatch(g_isolate, try_catch, normalized_filename);
+            }
             return std::string();
         }
-        return std::string();
+
+        g_isolate->PerformMicrotaskCheckpoint();
+        result_global.Reset(g_isolate, result);
     }
 
-    v8::String::Utf8Value utf8(g_isolate, result);
-    if (*utf8) return std::string(*utf8, utf8.length());
-    return std::string();
+    v8::Local<v8::Value> result = v8::Local<v8::Value>::New(g_isolate, result_global);
+    return ResolveTopLevelPromise(context, result, error_out);
 }
 
 }} // namespace
